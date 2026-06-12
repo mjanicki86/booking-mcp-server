@@ -17,6 +17,12 @@ if (!BOOKING_API_KEY) {
 const app = express();
 app.use(express.json());
 
+// Force correct Accept header before MCP SDK validates it
+app.use("/mcp", (req: Request, _res: Response, next: Function) => {
+  req.headers["accept"] = "application/json, text/event-stream";
+  next();
+});
+
 app.get("/health", (_req: Request, res: Response) =>
   res.json({ status: "ok", server: "booking-mcp-server" })
 );
@@ -28,12 +34,9 @@ app.post("/mcp", async (req: Request, res: Response) => {
   registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
   registerSearchCitiesTool(server, BOOKING_API_KEY);
 
-  const acceptHeader = req.headers["accept"] ?? "";
-  const useSSE = acceptHeader.includes("text/event-stream");
-
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
-    enableJsonResponse: !useSSE,
+    enableJsonResponse: true,
   });
 
   res.on("close", () => transport.close());
