@@ -83,6 +83,7 @@ export interface FormattedHotel {
 }
 
 export interface HotelSearchOutput {
+  [key: string]: unknown;
   success: boolean;
   city: string;
   city_id: number;
