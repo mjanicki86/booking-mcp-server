@@ -8,7 +8,8 @@ import { registerHotelSearchTool } from "./tools/hotelSearch.js";
 import { registerSearchCitiesTool } from "./tools/listCities.js";
 
 const BOOKING_API_KEY = process.env.BOOKING_API_KEY ?? "";
-const TRANSPORT = process.env.TRANSPORT ?? "stdio";
+const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
+const TRANSPORT = (process.env.TRANSPORT ?? "stdio").trim().toLowerCase();
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
 if (!BOOKING_API_KEY) {
@@ -16,7 +17,6 @@ if (!BOOKING_API_KEY) {
 }
 
 const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
 const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
 registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
