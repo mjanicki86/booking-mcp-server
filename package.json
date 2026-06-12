@@ -3,14 +3,9 @@
   "version": "1.0.0",
   "description": "MCP server for hotel search using Booking.com Demand API",
   "main": "dist/index.js",
-  "bin": {
-    "booking-mcp-server": "dist/index.js"
-  },
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && TRANSPORT=http node dist/index.js",
-    "dev": "ts-node src/index.ts",
-    "clean": "rm -rf dist"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
