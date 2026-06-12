@@ -1,7 +1,8 @@
 import { AccommodationSearchRequest, BookingApiError, FormattedHotel, Hotel, SearchResult } from "../types.js";
 export declare class BookingApiClient {
     private readonly apiKey;
-    constructor(apiKey: string);
+    private readonly affiliateId;
+    constructor(apiKey: string, affiliateId: string);
     post<T>(endpoint: string, body: unknown): Promise<T>;
     searchAccommodations(request: AccommodationSearchRequest): Promise<SearchResult>;
 }

@@ -5,8 +5,10 @@ exports.formatHotel = formatHotel;
 const constants_js_1 = require("../constants.js");
 class BookingApiClient {
     apiKey;
-    constructor(apiKey) {
+    affiliateId;
+    constructor(apiKey, affiliateId) {
         this.apiKey = apiKey;
+        this.affiliateId = affiliateId;
     }
     async post(endpoint, body) {
         const url = `${constants_js_1.BOOKING_API_BASE_URL}${endpoint}`;
@@ -14,7 +16,7 @@ class BookingApiClient {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "X-Affiliate-Id": this.apiKey,
+                "X-Affiliate-Id": this.affiliateId,
                 "Authorization": `Bearer ${this.apiKey}`,
             },
             body: JSON.stringify(body),

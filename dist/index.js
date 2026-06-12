@@ -13,12 +13,13 @@ const hotelSearch_js_1 = require("./tools/hotelSearch.js");
 const listCities_js_1 = require("./tools/listCities.js");
 const BOOKING_API_KEY = process.env.BOOKING_API_KEY ?? "";
 const TRANSPORT = process.env.TRANSPORT ?? "stdio";
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const PORT = parseInt(process.env.PORT ?? "8080", 10);
 if (!BOOKING_API_KEY) {
     console.error("Warning: BOOKING_API_KEY not set. All API calls will fail.");
 }
 const server = new mcp_js_1.McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-const apiClient = new bookingClient_js_1.BookingApiClient(BOOKING_API_KEY);
+const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
+const apiClient = new bookingClient_js_1.BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 (0, hotelSearch_js_1.registerHotelSearchTool)(server, apiClient, BOOKING_API_KEY);
 (0, listCities_js_1.registerSearchCitiesTool)(server, BOOKING_API_KEY);
 async function runHTTP() {

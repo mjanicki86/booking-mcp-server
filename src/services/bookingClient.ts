@@ -9,10 +9,12 @@ import { BOOKING_API_BASE_URL } from "../constants.js";
 
 export class BookingApiClient {
   private readonly apiKey: string;
+  private readonly affiliateId: string;
 
-  constructor(apiKey: string) {
-    this.apiKey = apiKey;
-  }
+constructor(apiKey: string, affiliateId: string) {
+  this.apiKey = apiKey;
+  this.affiliateId = affiliateId;
+}
 
   async post<T>(endpoint: string, body: unknown): Promise<T> {
     const url = `${BOOKING_API_BASE_URL}${endpoint}`;
@@ -20,9 +22,9 @@ export class BookingApiClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Affiliate-Id": this.apiKey,
+        "X-Affiliate-Id": this.affiliateId,
         "Authorization": `Bearer ${this.apiKey}`,
-      },
+},
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
