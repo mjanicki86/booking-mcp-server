@@ -18,7 +18,7 @@ export function registerHotelSearchTool(
 Args: city (any language), checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,
 children_ages, currency, breakfast_only, free_cancellation_only, min_stars, results_limit, offset, sort_by.
 Returns list of hotels with prices, ratings, distances, and booking URLs.`,
-      inputSchema: HotelSearchInputSchema,
+      inputSchema: HotelSearchInputSchema._def.schema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -28,7 +28,6 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
     },
     async (params: HotelSearchInput) => {
 
-      // 1. Resolve city name → city_id via API
       let cityResult;
       try {
         cityResult = await resolveCityId(params.city, apiKey);

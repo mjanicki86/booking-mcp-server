@@ -8,18 +8,12 @@ export function registerSearchCitiesTool(server: McpServer, apiKey: string): voi
     {
       title: "Search Cities",
       description: `Search for cities on Booking.com by name. Works worldwide in any language.
-
-Use this when:
-- You want to verify a city exists before searching for hotels
-- A hotel search returned a "city not found" error
-- The user types an ambiguous city name
-
+Use this when a hotel search returns "city not found" error.
 Args:
   - query (string): Full or partial city name, e.g. "War", "Tokyo", "New York"
   - limit (number): Max results to return (default: 10)
-
 Returns list of matching cities with their IDs and countries.`,
-      inputSchema: SearchCitiesInputSchema,
+      inputSchema: SearchCitiesInputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
