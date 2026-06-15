@@ -5,17 +5,12 @@ import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchema
 import { HotelSearchOutput } from "../types.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 
-export function registerHotelSearchTool(
-  server: McpServer,
-  client: BookingApiClient,
-  apiKey: string,
-  affiliateId: string
-): void {
+export function registerHotelSearchTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels using Booking.com. Works for any city worldwide.\nArgs: city (any language), checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,\ncurrency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by\n(one of: price, review_score, distance, popularity).\nReturns list of hotels with prices, ratings, distances, and booking URLs.",
+      description: "Search for available hotels using Booking.com. City must be one of the supported cities (use booking_search_cities to check).\nArgs: city, checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,\ncurrency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by\n(one of: price, review_score, distance, popularity).\nReturns list of hotels with prices, ratings, distances, and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -44,24 +39,13 @@ export function registerHotelSearchTool(
         };
       }
 
-      let cityResult;
-      try {
-        cityResult = await resolveCityId(params.city, apiKey, affiliateId);
-      } catch (err) {
-        return {
-          content: [{
-            type: "text",
-            text: "Error looking up city \"" + params.city + "\": " + (err instanceof Error ? err.message : String(err)),
-          }],
-          isError: true,
-        };
-      }
+      const cityResult = resolveCityId(params.city);
 
       if (!cityResult) {
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" not found. Try calling booking_search_cities with a partial name to find the correct spelling.",
+            text: "City \"" + params.city + "\" is not supported yet. Call booking_search_cities to see the list of supported cities.",
           }],
           isError: true,
         };

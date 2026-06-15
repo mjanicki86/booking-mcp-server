@@ -1,108 +1,49 @@
-import { BOOKING_API_BASE_URL } from "../constants.js";
+import { CITY_ID_MAP } from "../constants.js";
 
 export interface CitySearchResult {
   city_id: number;
   name: string;
   country: string;
-  region?: string;
 }
 
-const cityCache = new Map<string, CitySearchResult | null>();
+function normalizeCityName(cityName: string): string {
+  return cityName
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
 
-export async function resolveCityId(
-  cityName: string,
-  apiKey: string,
-  affiliateId: string
-): Promise<CitySearchResult | null> {
-  const cacheKey = cityName.toLowerCase().trim();
-
-  if (cityCache.has(cacheKey)) {
-    return cityCache.get(cacheKey) ?? null;
-  }
-
-  const url = BOOKING_API_BASE_URL + "/locations/cities?name=" + encodeURIComponent(cityName) + "&limit=5";
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Affiliate-Id": affiliateId,
-        "Authorization": "Bearer " + apiKey,
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch (err) {
-    throw new Error("Network error while looking up city \"" + cityName + "\": " + (err instanceof Error ? err.message : String(err)));
-  }
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      cityCache.set(cacheKey, null);
-      return null;
-    }
-    const errorText = await response.text().catch(() => "");
-    throw new Error("City lookup failed (HTTP " + response.status + "): " + response.statusText + ". " + errorText);
-  }
-
-  const data: any = await response.json();
-  const results: any[] = data.result ?? data.data ?? data.cities ?? data ?? [];
-
-  if (!Array.isArray(results) || results.length === 0) {
-    cityCache.set(cacheKey, null);
+export function resolveCityId(cityName: string): CitySearchResult | null {
+  const normalized = normalizeCityName(cityName);
+  const entry = CITY_ID_MAP[normalized];
+  if (!entry) {
     return null;
   }
-
-  const normalised = cityName.toLowerCase().trim();
-  const best = results.find((r: any) => {
-    const n = (r.name ?? r.city_name ?? "").toLowerCase();
-    return n === normalised;
-  }) ?? results[0];
-
-  const resolved: CitySearchResult = {
-    city_id: best.city_id ?? best.id ?? best.dest_id,
-    name: best.name ?? best.city_name ?? cityName,
-    country: best.country ?? best.country_code ?? "",
-    region: best.region ?? best.state ?? undefined,
+  return {
+    city_id: entry.city_id,
+    name: entry.name,
+    country: entry.country,
   };
-
-  cityCache.set(cacheKey, resolved);
-  return resolved;
 }
 
-export async function searchCities(
-  query: string,
-  apiKey: string,
-  affiliateId: string,
-  limit = 10
-): Promise<CitySearchResult[]> {
-  const url = BOOKING_API_BASE_URL + "/locations/cities?name=" + encodeURIComponent(query) + "&limit=" + limit;
+export function searchCities(query: string, limit: number): CitySearchResult[] {
+  const normalized = normalizeCityName(query);
+  const results: CitySearchResult[] = [];
+  const seen = new Set<number>();
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Affiliate-Id": affiliateId,
-      "Authorization": "Bearer " + apiKey,
-    },
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    throw new Error("City search failed (HTTP " + response.status + "): " + response.statusText + ". " + errorText);
+  for (const key in CITY_ID_MAP) {
+    if (key.indexOf(normalized) !== -1 || normalized.indexOf(key) !== -1) {
+      const entry = CITY_ID_MAP[key];
+      if (!seen.has(entry.city_id)) {
+        seen.add(entry.city_id);
+        results.push({ city_id: entry.city_id, name: entry.name, country: entry.country });
+        if (results.length >= limit) {
+          break;
+        }
+      }
+    }
   }
 
-  const data: any = await response.json();
-  const results: any[] = data.result ?? data.data ?? data.cities ?? data ?? [];
-
-  if (!Array.isArray(results)) return [];
-
-  return results.map((r: any) => ({
-    city_id: r.city_id ?? r.id ?? r.dest_id,
-    name: r.name ?? r.city_name ?? query,
-    country: r.country ?? r.country_code ?? "",
-    region: r.region ?? r.state ?? undefined,
-  }));
+  return results;
 }

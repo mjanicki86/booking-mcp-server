@@ -54,8 +54,8 @@ app.post("/mcp", async (req: Request, res: Response) => {
       const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
       const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
-      registerHotelSearchTool(server, apiClient, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
-      registerSearchCitiesTool(server, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+      registerHotelSearchTool(server, apiClient);
+      registerSearchCitiesTool(server);
 
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
