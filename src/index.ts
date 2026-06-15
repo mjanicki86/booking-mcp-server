@@ -17,31 +17,73 @@ if (!BOOKING_API_KEY) {
 const app = express();
 app.use(express.json());
 
-// Force correct Accept header before MCP SDK validates it
-app.use("/mcp", (req: Request, _res: Response, next: Function) => {
-  req.headers["accept"] = "application/json, text/event-stream";
-  next();
-});
+// Store transports by session ID for Copilot Studio session management
+const transports = new Map<string, StreamableHTTPServerTransport>();
 
 app.get("/health", (_req: Request, res: Response) =>
   res.json({ status: "ok", server: "booking-mcp-server" })
 );
 
 app.post("/mcp", async (req: Request, res: Response) => {
-  const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-  const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+  // Force correct headers before MCP SDK validates them
+  req.headers["accept"] = "application/json, text/event-stream";
+  req.headers["content-type"] = "application/json";
 
-  registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
-  registerSearchCitiesTool(server, BOOKING_API_KEY);
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
+  let transport: StreamableHTTPServerTransport;
 
-  res.on("close", () => transport.close());
-  await server.connect(transport);
+  if (sessionId && transports.has(sessionId)) {
+    // Reuse existing session
+    transport = transports.get(sessionId)!;
+  } else {
+    // Create new session
+    const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
+    const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+
+    registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
+    registerSearchCitiesTool(server, BOOKING_API_KEY);
+
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+      enableJsonResponse: true,
+    });
+
+    await server.connect(transport);
+
+    if (transport.sessionId) {
+      transports.set(transport.sessionId, transport);
+    }
+
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        transports.delete(transport.sessionId);
+      }
+    };
+  }
+
   await transport.handleRequest(req, res, req.body);
+});
+
+app.get("/mcp", async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (!sessionId || !transports.has(sessionId)) {
+    res.status(400).json({ error: "Invalid or missing session ID" });
+    return;
+  }
+  const transport = transports.get(sessionId)!;
+  await transport.handleRequest(req, res);
+});
+
+app.delete("/mcp", async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (sessionId && transports.has(sessionId)) {
+    const transport = transports.get(sessionId)!;
+    await transport.handleRequest(req, res);
+    transports.delete(sessionId);
+  } else {
+    res.status(404).json({ error: "Session not found" });
+  }
 });
 
 app.listen(PORT, () =>
