@@ -16,9 +16,10 @@ export function registerHotelSearchTool(
       title: "Search Hotels on Booking.com",
       description: `Search for available hotels using Booking.com. Works for any city worldwide.
 Args: city (any language), checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,
-children_ages, currency, breakfast_only, free_cancellation_only, min_stars, results_limit, offset, sort_by.
+currency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by
+(one of: price, review_score, distance, popularity).
 Returns list of hotels with prices, ratings, distances, and booking URLs.`,
-      inputSchema: HotelSearchInputSchema._def.schema.shape,
+      inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -27,6 +28,24 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
       },
     },
     async (params: HotelSearchInput) => {
+
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(params.checkin) || !dateRegex.test(params.checkout)) {
+        return {
+          content: [{ type: "text", text: "Error: checkin and checkout must be in YYYY-MM-DD format." }],
+          isError: true,
+        };
+      }
+
+      const checkinDate = new Date(params.checkin);
+      const checkoutDate = new Date(params.checkout);
+
+      if (checkoutDate <= checkinDate) {
+        return {
+          content: [{ type: "text", text: "Error: checkout date must be after checkin date." }],
+          isError: true,
+        };
+      }
 
       let cityResult;
       try {
@@ -52,9 +71,7 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
       }
 
       const { city_id: cityId, name: resolvedCityName, country } = cityResult;
-      const nights = Math.round(
-        (new Date(params.checkout).getTime() - new Date(params.checkin).getTime()) / 86400000
-      );
+      const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
 
       try {
         const result = await client.searchAccommodations({
@@ -65,14 +82,10 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
           guests: {
             number_of_adults: params.adults,
             number_of_rooms: params.rooms,
-            ...(params.children_ages?.length
-              ? { number_of_children: params.children_ages.length, children_ages: params.children_ages }
-              : {}),
           },
           currency: params.currency,
           extras: ["hotel_info", "price_breakdown", "meal_plan"],
           rows: params.results_limit,
-          offset: params.offset,
         });
 
         let hotels = result.hotels;
