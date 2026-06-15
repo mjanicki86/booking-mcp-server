@@ -25,6 +25,10 @@ app.get("/health", (_req: Request, res: Response) =>
 );
 
 app.post("/mcp", async (req: Request, res: Response) => {
+  console.error("=== POST /mcp received ===");
+  console.error("Headers:", JSON.stringify(req.headers));
+  console.error("Body:", JSON.stringify(req.body));
+
   // Force correct headers before MCP SDK validates them
   req.headers["accept"] = "application/json, text/event-stream";
   req.headers["content-type"] = "application/json";
@@ -33,39 +37,50 @@ app.post("/mcp", async (req: Request, res: Response) => {
 
   let transport: StreamableHTTPServerTransport;
 
-  if (sessionId && transports.has(sessionId)) {
-    // Reuse existing session
-    transport = transports.get(sessionId)!;
-  } else {
-    // Create new session
-    const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-    const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+  try {
+    if (sessionId && transports.has(sessionId)) {
+      // Reuse existing session
+      transport = transports.get(sessionId)!;
+    } else {
+      // Create new session
+      const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
+      const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
-    registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
-    registerSearchCitiesTool(server, BOOKING_API_KEY);
+      registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
+      registerSearchCitiesTool(server, BOOKING_API_KEY);
 
-    transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-      enableJsonResponse: true,
-    });
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        enableJsonResponse: true,
+      });
 
-    await server.connect(transport);
+      await server.connect(transport);
 
-    if (transport.sessionId) {
-      transports.set(transport.sessionId, transport);
+      if (transport.sessionId) {
+        transports.set(transport.sessionId, transport);
+      }
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          transports.delete(transport.sessionId);
+        }
+      };
     }
 
-    transport.onclose = () => {
-      if (transport.sessionId) {
-        transports.delete(transport.sessionId);
-      }
-    };
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("=== ERROR in POST /mcp ===");
+    console.error(err instanceof Error ? err.stack : String(err));
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal server error", details: err instanceof Error ? err.message : String(err) });
+    }
   }
-
-  await transport.handleRequest(req, res, req.body);
 });
 
 app.get("/mcp", async (req: Request, res: Response) => {
+  console.error("=== GET /mcp received ===");
+  console.error("Headers:", JSON.stringify(req.headers));
+
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports.has(sessionId)) {
     res.status(400).json({ error: "Invalid or missing session ID" });
@@ -76,6 +91,7 @@ app.get("/mcp", async (req: Request, res: Response) => {
 });
 
 app.delete("/mcp", async (req: Request, res: Response) => {
+  console.error("=== DELETE /mcp received ===");
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (sessionId && transports.has(sessionId)) {
     const transport = transports.get(sessionId)!;
