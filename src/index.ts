@@ -29,6 +29,14 @@ app.post("/mcp", async (req: Request, res: Response) => {
   console.error("Headers:", JSON.stringify(req.headers));
   console.error("Body:", JSON.stringify(req.body));
 
+  // Handle empty/probe requests that don't match JSON-RPC format
+  // (Copilot Studio sometimes sends these as connectivity checks)
+  if (!req.body || typeof req.body !== "object" || !("jsonrpc" in req.body)) {
+    console.error("=== Ignoring non-JSON-RPC probe request, responding 202 ===");
+    res.status(202).end();
+    return;
+  }
+
   // Force correct headers before MCP SDK validates them
   req.headers["accept"] = "application/json, text/event-stream";
   req.headers["content-type"] = "application/json";
