@@ -13,6 +13,9 @@ const PORT = parseInt(process.env.PORT ?? "8080", 10);
 if (!BOOKING_API_KEY) {
   console.error("Warning: BOOKING_API_KEY not set. All API calls will fail.");
 }
+if (!BOOKING_AFFILIATE_ID) {
+  console.error("Warning: BOOKING_AFFILIATE_ID not set. All API calls will fail.");
+}
 
 const app = express();
 app.use(express.json());
@@ -51,8 +54,8 @@ app.post("/mcp", async (req: Request, res: Response) => {
       const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
       const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
-      registerHotelSearchTool(server, apiClient, BOOKING_API_KEY);
-      registerSearchCitiesTool(server, BOOKING_API_KEY);
+      registerHotelSearchTool(server, apiClient, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+      registerSearchCitiesTool(server, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),

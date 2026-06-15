@@ -8,17 +8,14 @@ import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from
 export function registerHotelSearchTool(
   server: McpServer,
   client: BookingApiClient,
-  apiKey: string
+  apiKey: string,
+  affiliateId: string
 ): void {
   server.registerTool(
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: `Search for available hotels using Booking.com. Works for any city worldwide.
-Args: city (any language), checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,
-currency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by
-(one of: price, review_score, distance, popularity).
-Returns list of hotels with prices, ratings, distances, and booking URLs.`,
+      description: "Search for available hotels using Booking.com. Works for any city worldwide.\nArgs: city (any language), checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,\ncurrency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by\n(one of: price, review_score, distance, popularity).\nReturns list of hotels with prices, ratings, distances, and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -49,12 +46,12 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
 
       let cityResult;
       try {
-        cityResult = await resolveCityId(params.city, apiKey);
+        cityResult = await resolveCityId(params.city, apiKey, affiliateId);
       } catch (err) {
         return {
           content: [{
             type: "text",
-            text: `Error looking up city "${params.city}": ${err instanceof Error ? err.message : String(err)}`,
+            text: "Error looking up city \"" + params.city + "\": " + (err instanceof Error ? err.message : String(err)),
           }],
           isError: true,
         };
@@ -64,13 +61,15 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
         return {
           content: [{
             type: "text",
-            text: `City "${params.city}" not found. Try calling booking_search_cities with a partial name to find the correct spelling.`,
+            text: "City \"" + params.city + "\" not found. Try calling booking_search_cities with a partial name to find the correct spelling.",
           }],
           isError: true,
         };
       }
 
-      const { city_id: cityId, name: resolvedCityName, country } = cityResult;
+      const cityId = cityResult.city_id;
+      const resolvedCityName = cityResult.name;
+      const country = cityResult.country;
       const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
 
       try {
@@ -89,34 +88,40 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
         });
 
         let hotels = result.hotels;
-        if (params.breakfast_only)
-          hotels = hotels.filter(h =>
-            h.meal_plans?.some(mp =>
-              mp.code === "breakfast_included" || mp.name?.toLowerCase().includes("breakfast")
-            )
-          );
-        if (params.free_cancellation_only)
-          hotels = hotels.filter(h => h.free_cancellation);
-        if (params.min_stars)
-          hotels = hotels.filter(h => h.star_rating != null && h.star_rating >= params.min_stars!);
+        if (params.breakfast_only) {
+          hotels = hotels.filter(function (h) {
+            return h.meal_plans && h.meal_plans.some(function (mp) {
+              return mp.code === "breakfast_included" || (mp.name && mp.name.toLowerCase().indexOf("breakfast") !== -1);
+            });
+          });
+        }
+        if (params.free_cancellation_only) {
+          hotels = hotels.filter(function (h) { return h.free_cancellation; });
+        }
+        if (params.min_stars) {
+          hotels = hotels.filter(function (h) { return h.star_rating != null && h.star_rating >= params.min_stars!; });
+        }
 
-        if (params.sort_by === "price")
-          hotels.sort((a, b) => (a.price?.amount ?? 999999) - (b.price?.amount ?? 999999));
-        else if (params.sort_by === "review_score")
-          hotels.sort((a, b) => (b.review_score ?? 0) - (a.review_score ?? 0));
-        else if (params.sort_by === "distance")
-          hotels.sort((a, b) =>
-            (a.location?.distance_to_center ?? 999) - (b.location?.distance_to_center ?? 999)
-          );
+        if (params.sort_by === "price") {
+          hotels.sort(function (a, b) { return (a.price ? a.price.amount : 999999) - (b.price ? b.price.amount : 999999); });
+        } else if (params.sort_by === "review_score") {
+          hotels.sort(function (a, b) { return (b.review_score ?? 0) - (a.review_score ?? 0); });
+        } else if (params.sort_by === "distance") {
+          hotels.sort(function (a, b) {
+            const da = a.location && a.location.distance_to_center != null ? a.location.distance_to_center : 999;
+            const db = b.location && b.location.distance_to_center != null ? b.location.distance_to_center : 999;
+            return da - db;
+          });
+        }
 
         const currency = result.currency ?? params.currency;
-        const formatted = hotels.slice(0, params.results_limit).map(h => formatHotel(h, currency));
+        const formatted = hotels.slice(0, params.results_limit).map(function (h) { return formatHotel(h, currency); });
 
-        if (!formatted.length) {
+        if (formatted.length === 0) {
           return {
             content: [{
               type: "text",
-              text: `No hotels found in "${resolvedCityName}, ${country}" for ${params.checkin}–${params.checkout}. Try relaxing your filters.`,
+              text: "No hotels found in \"" + resolvedCityName + ", " + country + "\" for " + params.checkin + "\u2013" + params.checkout + ". Try relaxing your filters.",
             }],
           };
         }
@@ -127,20 +132,18 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
           city_id: cityId,
           checkin: params.checkin,
           checkout: params.checkout,
-          nights,
+          nights: nights,
           adults: params.adults,
           total_found: result.total_count,
           hotels: formatted,
-          currency,
+          currency: currency,
         };
 
         const text = JSON.stringify(output, null, 2);
         return {
           content: [{
             type: "text",
-            text: text.length > CHARACTER_LIMIT
-              ? text.slice(0, CHARACTER_LIMIT) + "\n...[truncated]"
-              : text,
+            text: text.length > CHARACTER_LIMIT ? text.slice(0, CHARACTER_LIMIT) + "\n...[truncated]" : text,
           }],
           structuredContent: output,
         };
@@ -150,7 +153,7 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
           return {
             content: [{
               type: "text",
-              text: `Booking.com API error (${err.apiError.status}): ${err.apiError.message}`,
+              text: "Booking.com API error (" + err.apiError.status + "): " + err.apiError.message,
             }],
             isError: true,
           };
@@ -158,7 +161,7 @@ Returns list of hotels with prices, ratings, distances, and booking URLs.`,
         return {
           content: [{
             type: "text",
-            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+            text: "Error: " + (err instanceof Error ? err.message : String(err)),
           }],
           isError: true,
         };
