@@ -17,7 +17,6 @@ export interface AccommodationSearchRequest {
   city: number;
   guests: GuestsInfo;
   currency?: string;
-  extras?: string[];
   rows?: number;
   offset?: number;
 }
@@ -38,15 +37,11 @@ export interface Hotel {
   price?: PriceInfo;
   currency?: string;
   location?: {
-    latitude?: number;
-    longitude?: number;
     city?: string;
     address?: string;
     distance_to_center?: number;
   };
   meal_plans?: { code?: string; name?: string }[];
-  checkin?: string;
-  checkout?: string;
   url?: string;
   property_type?: string;
   free_cancellation?: boolean;
@@ -100,7 +95,6 @@ export interface CityEntry {
   city_id: number;
   name: string;
   country: string;
-  region?: string;
 }
 
 export interface CityListOutput {

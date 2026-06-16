@@ -6,8 +6,8 @@ export function registerSearchCitiesTool(server: McpServer): void {
   server.registerTool(
     "booking_search_cities",
     {
-      title: "Search Cities",
-      description: "Search for cities supported by this server.\nArgs:\n  - query (string): Full or partial city name, e.g. \"War\", \"Krak\"\n  - limit (number): Max results to return (default: 10)\nReturns list of matching cities with their IDs and countries.",
+      title: "Search Supported Cities",
+      description: "List cities supported for hotel search. Use this to check if a city is available before calling booking_search_hotels.\nArgs:\n  - query: partial city name\n  - limit: max results (default 10)",
       inputSchema: SearchCitiesInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -18,7 +18,6 @@ export function registerSearchCitiesTool(server: McpServer): void {
     },
     async (params: SearchCitiesInput) => {
       const cities = searchCities(params.query, params.limit);
-
       if (cities.length === 0) {
         return {
           content: [{
@@ -27,7 +26,6 @@ export function registerSearchCitiesTool(server: McpServer): void {
           }],
         };
       }
-
       const output = { cities: cities, total: cities.length };
       return {
         content: [{ type: "text", text: JSON.stringify(output, null, 2) }],

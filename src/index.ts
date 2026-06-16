@@ -11,10 +11,10 @@ const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
 if (!BOOKING_API_KEY) {
-  console.error("Warning: BOOKING_API_KEY not set. All API calls will fail.");
+  console.error("Warning: BOOKING_API_KEY not set.");
 }
 if (!BOOKING_AFFILIATE_ID) {
-  console.error("Warning: BOOKING_AFFILIATE_ID not set. All API calls will fail.");
+  console.error("Warning: BOOKING_AFFILIATE_ID not set.");
 }
 
 const app = express();
@@ -34,7 +34,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
   const isJsonRpc = body && typeof body === "object" && body.jsonrpc !== undefined;
 
   if (!isJsonRpc) {
-    console.error("=== Ignoring non-JSON-RPC probe request, responding 202 ===");
+    console.error("=== Ignoring probe request ===");
     res.status(202).end();
     return;
   }
@@ -77,13 +77,9 @@ app.post("/mcp", async (req: Request, res: Response) => {
       }
     }
   } catch (err) {
-    console.error("=== ERROR in POST /mcp ===");
-    console.error(err instanceof Error ? err.stack : String(err));
+    console.error("=== ERROR: " + (err instanceof Error ? err.stack : String(err)));
     if (!res.headersSent) {
-      res.status(500).json({
-        error: "Internal server error",
-        details: err instanceof Error ? err.message : String(err),
-      });
+      res.status(500).json({ error: "Internal server error" });
     }
   }
 });
@@ -94,8 +90,7 @@ app.get("/mcp", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Invalid or missing session ID" });
     return;
   }
-  const transport = transports.get(sessionId)!;
-  await transport.handleRequest(req, res);
+  await transports.get(sessionId)!.handleRequest(req, res);
 });
 
 app.delete("/mcp", async (req: Request, res: Response) => {

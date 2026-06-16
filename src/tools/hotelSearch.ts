@@ -10,7 +10,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels using Booking.com. City must be one of the supported cities (use booking_search_cities to check).\nArgs: city, checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms,\ncurrency, breakfast_only, free_cancellation_only, min_stars, results_limit, sort_by\n(one of: price, review_score, distance, popularity).\nReturns list of hotels with prices, ratings, distances, and booking URLs.",
+      description: "Search for available hotels using Booking.com. Supported cities: Warszawa, Krakow, Amsterdam.\nArgs: city, checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if user explicitly requests it), results_limit, sort_by (price/review_score/distance/popularity).\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -34,26 +34,22 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
       if (checkoutDate <= checkinDate) {
         return {
-          content: [{ type: "text", text: "Error: checkout date must be after checkin date." }],
+          content: [{ type: "text", text: "Error: checkout must be after checkin." }],
           isError: true,
         };
       }
 
       const cityResult = resolveCityId(params.city);
-
       if (!cityResult) {
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" is not supported yet. Call booking_search_cities to see the list of supported cities.",
+            text: "City \"" + params.city + "\" not supported. Supported cities: Warszawa, Krakow, Amsterdam. Call booking_search_cities to check.",
           }],
           isError: true,
         };
       }
 
-      const cityId = cityResult.city_id;
-      const resolvedCityName = cityResult.name;
-      const country = cityResult.country;
       const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
 
       try {
@@ -61,7 +57,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
           checkin: params.checkin,
           checkout: params.checkout,
-          city: cityId,
+          city: cityResult.city_id,
           guests: {
             number_of_adults: params.adults,
             number_of_rooms: params.rooms,
@@ -71,22 +67,33 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         });
 
         let hotels = result.hotels;
+
         if (params.breakfast_only) {
-          hotels = hotels.filter(function (h) {
+          const filtered = hotels.filter(function (h) {
             return h.meal_plans && h.meal_plans.some(function (mp) {
-              return mp.code === "breakfast_included" || (mp.name && mp.name.toLowerCase().indexOf("breakfast") !== -1);
+              return mp.code === "breakfast_included" ||
+                (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
             });
           });
+          if (filtered.length > 0) hotels = filtered;
         }
+
         if (params.free_cancellation_only) {
-          hotels = hotels.filter(function (h) { return h.free_cancellation; });
+          const filtered = hotels.filter(function (h) { return h.free_cancellation === true; });
+          if (filtered.length > 0) hotels = filtered;
         }
+
         if (params.min_stars) {
-          hotels = hotels.filter(function (h) { return h.star_rating != null && h.star_rating >= params.min_stars!; });
+          const filtered = hotels.filter(function (h) {
+            return h.star_rating != null && h.star_rating >= params.min_stars!;
+          });
+          if (filtered.length > 0) hotels = filtered;
         }
 
         if (params.sort_by === "price") {
-          hotels.sort(function (a, b) { return (a.price ? a.price.amount : 999999) - (b.price ? b.price.amount : 999999); });
+          hotels.sort(function (a, b) {
+            return (a.price ? a.price.amount : 999999) - (b.price ? b.price.amount : 999999);
+          });
         } else if (params.sort_by === "review_score") {
           hotels.sort(function (a, b) { return (b.review_score ?? 0) - (a.review_score ?? 0); });
         } else if (params.sort_by === "distance") {
@@ -98,21 +105,23 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
 
         const currency = result.currency ?? params.currency;
-        const formatted = hotels.slice(0, params.results_limit).map(function (h) { return formatHotel(h, currency); });
+        const formatted = hotels.slice(0, params.results_limit).map(function (h) {
+          return formatHotel(h, currency);
+        });
 
         if (formatted.length === 0) {
           return {
             content: [{
               type: "text",
-              text: "No hotels found in \"" + resolvedCityName + ", " + country + "\" for " + params.checkin + "\u2013" + params.checkout + ". Try relaxing your filters.",
+              text: "No hotels found in " + cityResult.name + " for " + params.checkin + " to " + params.checkout + ". Try without filters.",
             }],
           };
         }
 
         const output: HotelSearchOutput = {
           success: true,
-          city: resolvedCityName,
-          city_id: cityId,
+          city: cityResult.name,
+          city_id: cityResult.city_id,
           checkin: params.checkin,
           checkout: params.checkout,
           nights: nights,
@@ -136,7 +145,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{
               type: "text",
-              text: "Booking.com API error (" + err.apiError.status + "): " + err.apiError.message + " | Details: " + (err.apiError.details || "none"),
+              text: "Booking.com API error (" + err.apiError.status + "): " + err.apiError.message + " | " + (err.apiError.details || ""),
             }],
             isError: true,
           };

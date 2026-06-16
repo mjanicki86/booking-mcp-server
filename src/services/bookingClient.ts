@@ -34,7 +34,7 @@ export class BookingApiClient {
 
     const responseText = await response.text();
     console.error("=== Booking.com response status: " + response.status);
-    console.error("=== Booking.com response body: " + responseText.slice(0, 500));
+    console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
 
     if (!response.ok) {
       throw new BookingApiRequestError({
@@ -71,12 +71,12 @@ function normalizeHotel(raw: any): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
   const v32Price = raw.price?.display?.booker_currency ?? raw.price?.total?.booker_currency;
-  const v32PriceCurrency = raw.currency?.booker ?? raw.currency?.accommodation ?? "PLN";
+  const v32Currency = raw.currency?.booker ?? raw.currency?.accommodation ?? "PLN";
   const legacyPrice = raw.min_total_price ?? raw.price_breakdown?.all_inclusive_price;
   const legacyCurrency = raw.price_breakdown?.currency ?? raw.currency_code ?? "PLN";
 
   const priceAmount = v32Price ?? legacyPrice;
-  const priceCurrency = v32Price != null ? v32PriceCurrency : legacyCurrency;
+  const priceCurrency = v32Price != null ? v32Currency : legacyCurrency;
 
   return {
     hotel_id: hotelId,
@@ -117,9 +117,9 @@ export function formatHotel(hotel: Hotel, currency: string): FormattedHotel {
     address: hotel.location?.address ?? hotel.location?.city ?? null,
     distance_to_center_km: hotel.location?.distance_to_center != null
       ? Math.round(hotel.location.distance_to_center * 10) / 10 : null,
-    breakfast_included: hotel.meal_plans?.some(mp =>
-      mp.code === "breakfast_included" || (mp.name && mp.name.toLowerCase().indexOf("breakfast") !== -1)
-    ) ?? false,
+    breakfast_included: hotel.meal_plans?.some(function (mp) {
+      return mp.code === "breakfast_included" || (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
+    }) ?? false,
     free_cancellation: hotel.free_cancellation ?? false,
     property_type: hotel.property_type ?? null,
     booking_url: hotel.url ?? null,
