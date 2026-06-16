@@ -34,7 +34,7 @@ export class BookingApiClient {
 
     const responseText = await response.text();
     console.error("=== Booking.com response status: " + response.status);
-    console.error("=== Booking.com response body: " + responseText);
+    console.error("=== Booking.com response body: " + responseText.slice(0, 500));
 
     if (!response.ok) {
       throw new BookingApiRequestError({
@@ -49,7 +49,7 @@ export class BookingApiClient {
 
   async searchAccommodations(request: AccommodationSearchRequest): Promise<SearchResult> {
     const raw = await this.post<any>("/accommodations/search", request);
-    const rawHotels = raw.result ?? raw.data ?? raw.hotels ?? [];
+    const rawHotels = raw.data ?? raw.result ?? raw.hotels ?? [];
     return {
       hotels: rawHotels.map(normalizeHotel),
       total_count: raw.total_count ?? raw.count ?? rawHotels.length,
@@ -68,26 +68,36 @@ export class BookingApiRequestError extends Error {
 }
 
 function normalizeHotel(raw: any): Hotel {
+  const hotelId = raw.hotel_id ?? raw.id ?? 0;
+
+  const v32Price = raw.price?.display?.booker_currency ?? raw.price?.total?.booker_currency;
+  const v32PriceCurrency = raw.currency?.booker ?? raw.currency?.accommodation ?? "PLN";
+  const legacyPrice = raw.min_total_price ?? raw.price_breakdown?.all_inclusive_price;
+  const legacyCurrency = raw.price_breakdown?.currency ?? raw.currency_code ?? "PLN";
+
+  const priceAmount = v32Price ?? legacyPrice;
+  const priceCurrency = v32Price != null ? v32PriceCurrency : legacyCurrency;
+
   return {
-    hotel_id: raw.hotel_id ?? raw.id ?? 0,
-    name: raw.name ?? "Unknown",
-    star_rating: raw.class,
+    hotel_id: hotelId,
+    name: raw.name ?? raw.hotel_name ?? "Hotel " + hotelId,
+    star_rating: raw.class ?? raw.star_rating,
     review_score: raw.review_score,
-    review_count: raw.review_nr,
+    review_count: raw.review_nr ?? raw.review_count,
     review_score_word: raw.review_score_word,
-    price: raw.min_total_price != null ? {
-      amount: raw.price_breakdown?.all_inclusive_price ?? raw.min_total_price,
-      currency: raw.price_breakdown?.currency ?? raw.currency_code ?? "EUR",
+    price: priceAmount != null ? {
+      amount: priceAmount,
+      currency: priceCurrency,
       amount_per_night: raw.price_breakdown?.sum_gross_price_per_night,
     } : undefined,
-    currency: raw.currency_code,
+    currency: priceCurrency,
     location: {
       address: raw.address,
       city: raw.city,
       distance_to_center: raw.distance,
     },
     meal_plans: raw.meal_plan ? [raw.meal_plan] : undefined,
-    url: raw.url,
+    url: raw.url ?? raw.deep_link_url,
     property_type: raw.accommodation_type_name,
     free_cancellation: raw.is_free_cancellable ?? raw.has_free_cancellation ?? false,
   };
