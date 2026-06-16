@@ -5,6 +5,7 @@ import express, { Request, Response } from "express";
 import { BookingApiClient } from "./services/bookingClient.js";
 import { registerHotelSearchTool } from "./tools/hotelSearch.js";
 import { registerSearchCitiesTool } from "./tools/listCities.js";
+import { registerHotelDetailsTool } from "./tools/hotelDetails.js";
 
 const BOOKING_API_KEY = process.env.BOOKING_API_KEY ?? "";
 const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
@@ -56,6 +57,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
 
       registerHotelSearchTool(server, apiClient);
       registerSearchCitiesTool(server);
+      registerHotelDetailsTool(server, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
 
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
