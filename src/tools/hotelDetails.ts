@@ -4,7 +4,7 @@ import { BOOKING_API_BASE_URL } from "../constants.js";
 
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
-    .describe("Hotel ID from booking_search_hotels results"),
+    .describe("Hotel ID from booking_search_hotels or booking_find_hotel results"),
 });
 
 type HotelDetailsInput = z.infer<typeof HotelDetailsInputSchema>;
@@ -27,7 +27,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel including facilities (parking, pool, gym, WiFi, restaurant), room types, check-in/out policies, and payment options. Requires hotel_id from booking_search_hotels results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel including facilities (parking, pool, gym, WiFi, restaurant), room types, check-in/out policies, and payment options. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -86,21 +86,12 @@ export function registerHotelDetailsTool(
 
         const hotel = hotels[0];
 
-        // Extract name
         const name = extractText(hotel.name) ?? "Unknown";
-
-        // Extract description
-        const description = extractText(hotel.description?.text) ??
-          extractText(hotel.description) ?? null;
-
-        // Extract important info
+        const description = extractText(hotel.description?.text) ?? extractText(hotel.description) ?? null;
         const importantInfo = extractText(hotel.description?.important_information) ?? null;
-
-        // Extract checkin/checkout times
         const checkinFrom = hotel.checkin_checkout_times?.checkin_from ?? null;
         const checkoutTo = hotel.checkin_checkout_times?.checkout_to ?? null;
 
-        // Extract facilities
         const facilities: string[] = [];
         if (Array.isArray(hotel.facilities)) {
           for (const f of hotel.facilities) {
@@ -109,7 +100,6 @@ export function registerHotelDetailsTool(
           }
         }
 
-        // Extract room info
         const rooms: any[] = [];
         if (Array.isArray(hotel.rooms)) {
           for (const room of hotel.rooms) {
@@ -128,7 +118,6 @@ export function registerHotelDetailsTool(
           }
         }
 
-        // Extract payment methods
         const paymentMethods: string[] = [];
         if (Array.isArray(hotel.payment_methods)) {
           for (const p of hotel.payment_methods) {
@@ -137,15 +126,14 @@ export function registerHotelDetailsTool(
           }
         }
 
-        // Extract address
         const address = hotel.address
-          ? (hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")
+          ? ((hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")).trim()
           : null;
 
         const output = {
           hotel_id: params.hotel_id,
           name: name,
-          address: address ? address.trim() : null,
+          address: address || null,
           stars: hotel.class ?? hotel.star_rating ?? null,
           checkin_from: checkinFrom,
           checkout_until: checkoutTo,
@@ -157,10 +145,14 @@ export function registerHotelDetailsTool(
           parking: hotel.parking ?? null,
           pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
           url: hotel.url ?? null,
+          data_source: "Booking.com API",
         };
 
         return {
-          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
+          }],
           structuredContent: output,
         };
 

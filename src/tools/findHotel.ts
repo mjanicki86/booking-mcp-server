@@ -46,7 +46,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       }
 
       try {
-        // Use tomorrow and day after as dummy dates just to get hotel list
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         const dayAfter = new Date();
@@ -74,7 +73,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           };
         }
 
-        // Find best name match
         const searchName = params.hotel_name.toLowerCase();
         const matched = result.hotels.filter(function (h) {
           return h.name.toLowerCase().indexOf(searchName) !== -1 ||
@@ -95,10 +93,14 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           note: matched.length === 0
             ? "Exact match not found. Showing available hotels in " + params.city + "."
             : "Found " + matched.length + " matching hotel(s).",
+          data_source: "Booking.com API",
         };
 
         return {
-          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          content: [{
+            type: "text",
+            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
+          }],
           structuredContent: output,
         };
 

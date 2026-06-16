@@ -135,7 +135,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         return {
           content: [{
             type: "text",
-            text: text.length > CHARACTER_LIMIT ? text.slice(0, CHARACTER_LIMIT) + "\n...[truncated]" : text,
+            text: (text.length > CHARACTER_LIMIT ? text.slice(0, CHARACTER_LIMIT) + "\n...[truncated]" : text) + "\n\n---\nSource: Booking.com API"
           }],
           structuredContent: output,
         };
