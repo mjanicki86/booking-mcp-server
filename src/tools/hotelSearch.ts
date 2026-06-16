@@ -67,7 +67,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             number_of_rooms: params.rooms,
           },
           currency: params.currency,
-          extras: ["hotel_info", "price_breakdown", "meal_plan"],
           rows: params.results_limit,
         });
 
@@ -137,7 +136,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{
               type: "text",
-              text: "Booking.com API error (" + err.apiError.status + "): " + err.apiError.message,
+              text: "Booking.com API error (" + err.apiError.status + "): " + err.apiError.message + " | Details: " + (err.apiError.details || "none"),
             }],
             isError: true,
           };
