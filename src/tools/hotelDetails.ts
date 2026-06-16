@@ -9,6 +9,15 @@ const HotelDetailsInputSchema = z.object({
 
 type HotelDetailsInput = z.infer<typeof HotelDetailsInputSchema>;
 
+function extractText(field: any): string | null {
+  if (!field) return null;
+  if (typeof field === "string") return field;
+  if (typeof field === "object") {
+    return field["en-gb"] ?? field["pl"] ?? field["en"] ?? Object.values(field)[0] as string ?? null;
+  }
+  return null;
+}
+
 export function registerHotelDetailsTool(
   server: McpServer,
   apiKey: string,
@@ -51,7 +60,7 @@ export function registerHotelDetailsTool(
 
         const responseText = await response.text();
         console.error("=== Hotel details status: " + response.status);
-        console.error("=== Hotel details body: " + responseText.slice(0, 1000));
+        console.error("=== Hotel details body: " + responseText.slice(0, 2000));
 
         if (!response.ok) {
           return {
@@ -77,50 +86,76 @@ export function registerHotelDetailsTool(
 
         const hotel = hotels[0];
 
+        // Extract name
+        const name = extractText(hotel.name) ?? "Unknown";
+
+        // Extract description
+        const description = extractText(hotel.description?.text) ??
+          extractText(hotel.description) ?? null;
+
+        // Extract important info
+        const importantInfo = extractText(hotel.description?.important_information) ?? null;
+
+        // Extract checkin/checkout times
+        const checkinFrom = hotel.checkin_checkout_times?.checkin_from ?? null;
+        const checkoutTo = hotel.checkin_checkout_times?.checkout_to ?? null;
+
+        // Extract facilities
         const facilities: string[] = [];
         if (Array.isArray(hotel.facilities)) {
           for (const f of hotel.facilities) {
-            if (f.name) facilities.push(String(f.name));
+            const fname = extractText(f.name) ?? extractText(f.facility_name);
+            if (fname) facilities.push(fname);
           }
         }
 
+        // Extract room info
         const rooms: any[] = [];
         if (Array.isArray(hotel.rooms)) {
           for (const room of hotel.rooms) {
             const roomFacilities: string[] = [];
             if (Array.isArray(room.facilities)) {
               for (const f of room.facilities) {
-                if (f.name) roomFacilities.push(String(f.name));
+                const fname = extractText(f.name) ?? extractText(f.facility_name);
+                if (fname) roomFacilities.push(fname);
               }
             }
             rooms.push({
-              name: room.name ?? "Room",
+              name: extractText(room.name) ?? "Room",
               max_occupancy: room.max_occupancy ?? null,
               facilities: roomFacilities,
             });
           }
         }
 
+        // Extract payment methods
         const paymentMethods: string[] = [];
         if (Array.isArray(hotel.payment_methods)) {
           for (const p of hotel.payment_methods) {
-            if (p.name) paymentMethods.push(String(p.name));
+            const pname = extractText(p.name);
+            if (pname) paymentMethods.push(pname);
           }
         }
 
+        // Extract address
+        const address = hotel.address
+          ? (hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")
+          : null;
+
         const output = {
           hotel_id: params.hotel_id,
-          name: hotel.name ?? "Unknown",
-          address: hotel.address ?? null,
+          name: name,
+          address: address ? address.trim() : null,
           stars: hotel.class ?? hotel.star_rating ?? null,
-          description: hotel.description ?? hotel.hotel_description ?? null,
-          checkin_time: hotel.checkin ? hotel.checkin.from ?? null : null,
-          checkout_time: hotel.checkout ? hotel.checkout.until ?? null : null,
+          checkin_from: checkinFrom,
+          checkout_until: checkoutTo,
+          description: description ? description.slice(0, 500) : null,
+          important_information: importantInfo ? importantInfo.slice(0, 500) : null,
           facilities: facilities,
           rooms: rooms,
           payment_methods: paymentMethods,
-          pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
           parking: hotel.parking ?? null,
+          pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
           url: hotel.url ?? null,
         };
 
