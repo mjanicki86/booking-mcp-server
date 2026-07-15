@@ -39,5 +39,5 @@ jobs:
           registryUsername: ${{ secrets.BOOKINGMCPDEV_REGISTRY_USERNAME }}
           registryPassword: ${{ secrets.BOOKINGMCPDEV_REGISTRY_PASSWORD }}
           containerAppName: booking-mcp-dev
-          resourceGroup: RG-Copilot
+          resourceGroup: rg-containerapps-dev
           targetPort: 8080
