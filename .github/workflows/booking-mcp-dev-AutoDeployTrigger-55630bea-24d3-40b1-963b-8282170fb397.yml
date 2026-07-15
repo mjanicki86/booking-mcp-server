@@ -31,7 +31,7 @@ jobs:
           password: ${{ secrets.BOOKINGMCPDEV_REGISTRY_PASSWORD }}
 
       - name: Build and deploy to Container App
-        uses: azure/container-apps-deploy-action@v2
+        uses: azure/container-apps-deploy-action@v1
         with:
           appSourcePath: ${{ github.workspace }}
           dockerfilePath: Dockerfile
