@@ -9,6 +9,61 @@ const HotelDetailsInputSchema = z.object({
 
 type HotelDetailsInput = z.infer<typeof HotelDetailsInputSchema>;
 
+// Slownik udogodnien Booking.com: numer ID -> polska nazwa.
+// API 3.1 zwraca same numery, wiec tlumaczymy je tutaj.
+const FACILITY_NAMES: Record<number, string> = {
+  2: "parking",
+  3: "restauracja",
+  4: "zwierzeta akceptowane",
+  5: "room service",
+  6: "sale konferencyjne",
+  7: "bar",
+  8: "recepcja 24h",
+  10: "sauna",
+  11: "silownia / fitness",
+  14: "ogrod",
+  15: "taras",
+  16: "pokoje dla niepalacych",
+  17: "transfer lotniskowy",
+  20: "centrum biznesowe",
+  21: "opieka nad dziecmi",
+  22: "pralnia",
+  23: "pranie chemiczne",
+  25: "udogodnienia dla niepelnosprawnych",
+  28: "pokoje rodzinne",
+  47: "sejf",
+  48: "winda",
+  51: "kantor wymiany walut",
+  54: "spa i centrum wellness",
+  55: "masaze",
+  56: "plac zabaw dla dzieci",
+  63: "jacuzzi",
+  64: "pokoje dzwiekoszczelne",
+  72: "miejsce na grilla",
+  73: "suchy prowiant",
+  75: "wypozyczalnia samochodow",
+  76: "wypozyczalnia rowerow",
+  80: "ogrzewanie",
+  91: "przechowalnia bagazu",
+  103: "basen kryty",
+  104: "basen odkryty",
+  107: "darmowe WiFi",
+  108: "obiekt calkowicie dla niepalacych",
+  109: "klimatyzacja",
+  110: "wyznaczone miejsce dla palacych",
+  124: "concierge",
+  158: "codzienne sprzatanie",
+};
+
+// Tlumaczenie atrybutow udogodnien
+const ATTRIBUTE_NAMES: Record<string, string> = {
+  paid: "platne",
+  free: "bezplatne",
+  private: "prywatne",
+  on_site: "na miejscu",
+  reservation_needed: "wymagana rezerwacja",
+};
+
 function extractText(field: any): string | null {
   if (!field) return null;
   if (typeof field === "string") return field;
@@ -16,6 +71,29 @@ function extractText(field: any): string | null {
     return field["en-gb"] ?? field["pl"] ?? field["en"] ?? Object.values(field)[0] as string ?? null;
   }
   return null;
+}
+
+// Zamienia wpis udogodnienia (numer + atrybuty) na czytelny tekst,
+// np. {id: 2, attributes: ["paid"]} -> "parking (platne)"
+function facilityToText(f: any): string | null {
+  // Najpierw sprobuj nazwy wprost z API (niektore wersje ja zwracaja)
+  const directName = extractText(f.name) ?? extractText(f.facility_name);
+  const baseName = directName ?? FACILITY_NAMES[f.id] ?? null;
+  if (!baseName) {
+    // Nieznany numer - pokaz go, zeby dalo sie latwo uzupelnic slownik
+    return f.id != null ? "udogodnienie #" + f.id : null;
+  }
+
+  const attrs: string[] = [];
+  if (Array.isArray(f.attributes)) {
+    for (const a of f.attributes) {
+      if (typeof a === "string") {
+        attrs.push(ATTRIBUTE_NAMES[a] ?? a);
+      }
+    }
+  }
+
+  return attrs.length > 0 ? baseName + " (" + attrs.join(", ") + ")" : baseName;
 }
 
 export function registerHotelDetailsTool(
@@ -27,7 +105,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel including facilities (parking, pool, gym, WiFi, restaurant), room types, check-in/out policies, and payment options. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel including facilities (parking, pool, gym, WiFi, restaurant, air conditioning, spa), room types, check-in/out policies, payment options, and important information such as parking fees and pet policies. Use this tool whenever the user asks about a hotel's amenities, facilities, parking, prices of extras, or policies. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -95,8 +173,8 @@ export function registerHotelDetailsTool(
         const facilities: string[] = [];
         if (Array.isArray(hotel.facilities)) {
           for (const f of hotel.facilities) {
-            const fname = extractText(f.name) ?? extractText(f.facility_name);
-            if (fname) facilities.push(fname);
+            const ftext = facilityToText(f);
+            if (ftext) facilities.push(ftext);
           }
         }
 
@@ -106,8 +184,8 @@ export function registerHotelDetailsTool(
             const roomFacilities: string[] = [];
             if (Array.isArray(room.facilities)) {
               for (const f of room.facilities) {
-                const fname = extractText(f.name) ?? extractText(f.facility_name);
-                if (fname) roomFacilities.push(fname);
+                const ftext = facilityToText(f);
+                if (ftext) roomFacilities.push(ftext);
               }
             }
             rooms.push({
@@ -137,34 +215,8 @@ export function registerHotelDetailsTool(
           stars: hotel.class ?? hotel.star_rating ?? null,
           checkin_from: checkinFrom,
           checkout_until: checkoutTo,
-          description: description ? description.slice(0, 500) : null,
-          important_information: importantInfo ? importantInfo.slice(0, 500) : null,
-          facilities: facilities,
-          rooms: rooms,
-          payment_methods: paymentMethods,
-          parking: hotel.parking ?? null,
-          pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
-          url: hotel.url ?? null,
-          data_source: "Booking.com API",
-        };
-
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
-          }],
-          structuredContent: output,
-        };
-
-      } catch (err) {
-        return {
-          content: [{
-            type: "text",
-            text: "Error getting hotel details: " + (err instanceof Error ? err.message : String(err)),
-          }],
-          isError: true,
-        };
-      }
-    }
-  );
-}
+          description: description ? description.slice(0, 1500) : null,
+          // Wazne informacje zawieraja m.in. ceny parkingu i zasady dot. zwierzat
+          // - nie ucinamy ich, zeby agent mogl odpowiadac na pytania o oplaty
+          important_information: importantInfo ?? null,
+          facilities:
