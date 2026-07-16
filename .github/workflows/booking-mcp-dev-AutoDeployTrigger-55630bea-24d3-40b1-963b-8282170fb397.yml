@@ -23,11 +23,21 @@ jobs:
           tenant-id: ${{ secrets.BOOKINGMCPDEV_AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.BOOKINGMCPDEV_AZURE_SUBSCRIPTION_ID }}
 
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ca3eefb6ab51acr.azurecr.io
+          username: ${{ secrets.BOOKINGMCPDEV_REGISTRY_USERNAME }}
+          password: ${{ secrets.BOOKINGMCPDEV_REGISTRY_PASSWORD }}
+
       - name: Build and deploy to Container App
-        uses: azure/container-apps-deploy-action@v2
+        uses: azure/container-apps-deploy-action@v1
         with:
           appSourcePath: ${{ github.workspace }}
           dockerfilePath: Dockerfile
+          registryUrl: ca3eefb6ab51acr.azurecr.io
+          registryUsername: ${{ secrets.BOOKINGMCPDEV_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.BOOKINGMCPDEV_REGISTRY_PASSWORD }}
           containerAppName: booking-mcp-dev
           resourceGroup: rg-containerapps-dev
           targetPort: 8080
