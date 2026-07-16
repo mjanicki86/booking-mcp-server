@@ -219,4 +219,32 @@ export function registerHotelDetailsTool(
           // Wazne informacje zawieraja m.in. ceny parkingu i zasady dot. zwierzat
           // - nie ucinamy ich, zeby agent mogl odpowiadac na pytania o oplaty
           important_information: importantInfo ?? null,
-          facilities:
+          facilities: facilities,
+          rooms: rooms,
+          payment_methods: paymentMethods,
+          parking: hotel.parking ?? null,
+          pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
+          url: hotel.url ?? null,
+          data_source: "Booking.com API",
+        };
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
+          }],
+          structuredContent: output,
+        };
+
+      } catch (err) {
+        return {
+          content: [{
+            type: "text",
+            text: "Error getting hotel details: " + (err instanceof Error ? err.message : String(err)),
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+}
