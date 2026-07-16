@@ -1,5 +1,3 @@
-export const BOOKING_API_BASE_URL = "https://demandapi-sandbox.booking.com/3.2";
-
 export const CHARACTER_LIMIT = 50000;
 export const DEFAULT_RESULTS_LIMIT = 20;
 export const DEFAULT_CURRENCY = "PLN";
