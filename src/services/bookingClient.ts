@@ -49,9 +49,38 @@ export class BookingApiClient {
 
   async searchAccommodations(request: AccommodationSearchRequest): Promise<SearchResult> {
     const raw = await this.post<any>("/accommodations/search", request);
-    const rawHotels = raw.data ?? raw.result ?? raw.hotels ?? [];
+    const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
+
+    // API 3.1 nie zwraca nazw hoteli w wynikach wyszukiwania.
+    // Dociagamy je jednym zbiorczym zapytaniem o szczegoly wszystkich znalezionych hoteli.
+    const ids = rawHotels
+      .map((h: any) => h.hotel_id ?? h.id)
+      .filter((id: any) => id != null);
+
+    const namesById: Record<number, string> = {};
+    if (ids.length > 0) {
+      try {
+        const details = await this.post<any>("/accommodations/details", {
+          accommodations: ids,
+        });
+        const detailsData: any[] = details.data ?? details.result ?? [];
+        for (const d of detailsData) {
+          const nm = extractLocalizedText(d.name);
+          if (d.id != null && nm) {
+            namesById[d.id] = nm;
+          }
+        }
+      } catch (err) {
+        // Nazwy to dodatek - jesli sie nie uda, lista i tak wraca (z ID zamiast nazw)
+        console.error(
+          "=== Nie udalo sie pobrac nazw hoteli: " +
+            (err instanceof Error ? err.message : String(err))
+        );
+      }
+    }
+
     return {
-      hotels: rawHotels.map(normalizeHotel),
+      hotels: rawHotels.map((h: any) => normalizeHotel(h, namesById)),
       total_count: raw.total_count ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
     };
@@ -67,20 +96,48 @@ export class BookingApiRequestError extends Error {
   }
 }
 
-function normalizeHotel(raw: any): Hotel {
+// Booking.com zwraca teksty jako obiekt wielojezyczny, np. {"en-gb": "Hotel X"}
+function extractLocalizedText(field: any): string | null {
+  if (!field) return null;
+  if (typeof field === "string") return field;
+  if (typeof field === "object") {
+    return (
+      field["en-gb"] ?? field["pl"] ?? field["en"] ??
+      (Object.values(field)[0] as string) ?? null
+    );
+  }
+  return null;
+}
+
+function normalizeHotel(raw: any, namesById: Record<number, string>): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
-  const v32Price = raw.price?.display?.booker_currency ?? raw.price?.total?.booker_currency;
-  const v32Currency = raw.currency?.booker ?? raw.currency?.accommodation ?? "PLN";
-  const legacyPrice = raw.min_total_price ?? raw.price_breakdown?.all_inclusive_price;
-  const legacyCurrency = raw.price_breakdown?.currency ?? raw.currency_code ?? "PLN";
+  // Format 3.1: price.total / price.book to zwykle liczby, currency to tekst (np. "PLN")
+  const v31Price =
+    typeof raw.price?.total === "number" ? raw.price.total :
+    typeof raw.price?.book === "number" ? raw.price.book : undefined;
+  const v31Currency = typeof raw.currency === "string" ? raw.currency : undefined;
 
-  const priceAmount = v32Price ?? legacyPrice;
-  const priceCurrency = v32Price != null ? v32Currency : legacyCurrency;
+  // Format 3.2: ceny i waluty zagniezdzone w obiektach
+  const v32Price = raw.price?.display?.booker_currency ?? raw.price?.total?.booker_currency;
+  const v32Currency = raw.currency?.booker ?? raw.currency?.accommodation;
+
+  // Starsze formaty
+  const legacyPrice = raw.min_total_price ?? raw.price_breakdown?.all_inclusive_price;
+  const legacyCurrency = raw.price_breakdown?.currency ?? raw.currency_code;
+
+  const priceAmount = v31Price ?? v32Price ?? legacyPrice;
+  const priceCurrency = v31Currency ?? v32Currency ?? legacyCurrency ?? "PLN";
+
+  const name =
+    namesById[hotelId] ??
+    extractLocalizedText(raw.name) ??
+    raw.hotel_name ??
+    "Hotel " + hotelId;
 
   return {
     hotel_id: hotelId,
-    name: raw.name ?? raw.hotel_name ?? "Hotel " + hotelId,
+    name: name,
     star_rating: raw.class ?? raw.star_rating,
     review_score: raw.review_score,
     review_count: raw.review_nr ?? raw.review_count,
