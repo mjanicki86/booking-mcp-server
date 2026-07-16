@@ -5,7 +5,7 @@ import {
   Hotel,
   SearchResult,
 } from "../types.js";
-import { BOOKING_API_BASE_URL } from "../constants.js";
+import { config } from "../config.js";
 
 export class BookingApiClient {
   private readonly apiKey: string;
@@ -17,7 +17,7 @@ export class BookingApiClient {
   }
 
   async post<T>(endpoint: string, body: unknown): Promise<T> {
-    const url = BOOKING_API_BASE_URL + endpoint;
+    const url = config.bookingApiBaseUrl + endpoint;
     console.error("=== Calling Booking.com: " + url);
     console.error("=== Request body: " + JSON.stringify(body));
 

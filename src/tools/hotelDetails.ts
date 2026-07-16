@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { BOOKING_API_BASE_URL } from "../constants.js";
+import { config } from "../config.js";
 
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
@@ -39,7 +39,7 @@ export function registerHotelDetailsTool(
     async (params: HotelDetailsInput) => {
       try {
         const endpoint = "/accommodations/details";
-        const url = BOOKING_API_BASE_URL + endpoint;
+        const url = config.bookingApiBaseUrl + endpoint;
         console.error("=== Calling hotel details for hotel " + params.hotel_id);
 
         const requestBody = {
