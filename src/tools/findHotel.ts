@@ -7,7 +7,7 @@ const FindHotelInputSchema = z.object({
   hotel_name: z.string().min(2).max(200)
     .describe("Hotel name to search for, e.g. \"ibis Amsterdam Centre\", \"Marriott Warsaw\""),
   city: z.string().min(2).max(100)
-    .describe("City where the hotel is located, e.g. \"Amsterdam\", \"Warszawa\""),
+    .describe('City where the hotel is located, IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate the city name to English before calling.'),
   country: z.string().min(2).max(2)
     .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Infer it from the city name.'),
 });
@@ -19,7 +19,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
     "booking_find_hotel",
     {
       title: "Find Hotel by Name",
-      description: "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used with booking_get_hotel_details. Use this when the user asks about a specific hotel by name but has not provided dates. Does NOT require dates. Args: hotel_name, city, country (2-letter code).",
+      description: "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used with booking_get_hotel_details. Use this when the user asks about a specific hotel by name but has not provided dates. Does NOT require dates. Args: hotel_name, city (in English), country (2-letter code).",
       inputSchema: FindHotelInputSchema.shape,
       annotations: {
         readOnlyHint: true,

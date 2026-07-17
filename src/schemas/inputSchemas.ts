@@ -4,9 +4,9 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const HotelSearchInputSchema = z.object({
   city: z.string().min(2).max(100)
-    .describe('City name anywhere in the world, e.g. "Warszawa", "Amsterdam", "Tokyo"'),
+    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Munich" (not "Muenchen"), "Rome" (not "Roma"). Always translate the city name to English before calling.'),
   country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code (ISO 3166-1) of the city, e.g. "pl" for Poland, "nl" for Netherlands, "fr" for France. Infer it from the city name if the user does not state it.'),
+    .describe('Two-letter lowercase country code (ISO 3166-1) of the city, e.g. "pl" for Poland, "nl" for Netherlands. Infer it from the city name if the user does not state it.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe('Check-in date in YYYY-MM-DD format. OPTIONAL - if the user did not give dates, DO NOT ask them; omit this and a default date about 3 months ahead will be used.'),
   checkout: z.string().regex(dateRegex).optional()
@@ -33,7 +33,7 @@ export type HotelSearchInput = z.infer<typeof HotelSearchInputSchema>;
 
 export const SearchCitiesInputSchema = z.object({
   query: z.string().min(2).max(100)
-    .describe('City name or partial name, e.g. "War", "Amsterdam"'),
+    .describe('City name or partial name IN ENGLISH, e.g. "Warsaw", "Amsterdam"'),
   country: z.string().min(2).max(2)
     .describe('Two-letter lowercase country code to search in, e.g. "pl", "nl"'),
   limit: z.number().int().min(1).max(20).default(10)
