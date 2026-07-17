@@ -9,7 +9,7 @@ import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from
 function getDefaultDates(): { checkin: string; checkout: string } {
   const base = new Date();
   base.setDate(base.getDate() + 90);
-  const day = base.getDay(); // 0=niedziela ... 5=piatek
+  const day = base.getDay();
   const toFriday = (5 - day + 7) % 7;
   base.setDate(base.getDate() + toFriday);
   const checkout = new Date(base);
@@ -25,7 +25,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide using Booking.com. Dates are OPTIONAL: if the user did not provide dates, call this tool WITHOUT checkin/checkout instead of asking the user - sample prices for a weekend about 3 months ahead will be returned.\nArgs: city, country (2-letter code, infer from city), checkin (YYYY-MM-DD, optional), checkout (optional), adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if user explicitly requests it), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes:\n  1. city + country: for general city searches, e.g. 'hotels in Warsaw'. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): when the user asks for hotels near a specific place, e.g. 'hotels within 1 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 1. Provide the coordinates of the place yourself. Combine with sort_by 'distance' for closest-first results.\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nReturns hotels with prices, booking URLs, and (in coordinate mode) distance data.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -35,6 +35,18 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       },
     },
     async (params: HotelSearchInput) => {
+
+      const usingCoordinates = params.latitude != null && params.longitude != null;
+
+      if (!usingCoordinates && (!params.city || !params.country)) {
+        return {
+          content: [{
+            type: "text",
+            text: "Error: provide either city + country, or latitude + longitude.",
+          }],
+          isError: true,
+        };
+      }
 
       let checkin = params.checkin;
       let checkout = params.checkout;
@@ -57,32 +69,64 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         };
       }
 
-      const cityResult = await resolveCityId(client, params.city, params.country);
-      if (!cityResult) {
-        return {
-          content: [{
-            type: "text",
-            text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code, or use booking_search_cities to search.",
-          }],
-          isError: true,
-        };
-      }
-
       const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
 
+      // Zbuduj czesc lokalizacyjna zapytania: wspolrzedne ALBO miasto
+      let locationPart: any;
+      let locationLabel: string;
+      let cityIdForOutput: number | null = null;
+
+      if (usingCoordinates) {
+        locationPart = {
+          coordinates: {
+            latitude: params.latitude,
+            longitude: params.longitude,
+            radius: params.radius_km,
+          },
+        };
+        locationLabel = "point (" + params.latitude + ", " + params.longitude + "), radius " + params.radius_km + " km";
+      } else {
+        const cityResult = await resolveCityId(client, params.city!, params.country!);
+        if (!cityResult) {
+          return {
+            content: [{
+              type: "text",
+              text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code, or use booking_search_cities to search.",
+            }],
+            isError: true,
+          };
+        }
+        locationPart = { city: cityResult.city_id };
+        locationLabel = cityResult.name;
+        cityIdForOutput = cityResult.city_id;
+      }
+
+      // Sortowanie po stronie API (dziala najlepiej dla trybu wspolrzednych)
+      let sortPart: any = undefined;
+      if (params.sort_by === "distance" && usingCoordinates) {
+        sortPart = { by: "distance", direction: "ascending" };
+      } else if (params.sort_by === "price") {
+        sortPart = { by: "price", direction: "ascending" };
+      } else if (params.sort_by === "review_score") {
+        sortPart = { by: "review_score", direction: "descending" };
+      }
+
       try {
-        const result = await client.searchAccommodations({
+        const request: any = {
           booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
           checkin: checkin,
           checkout: checkout,
-          city: cityResult.city_id,
           guests: {
             number_of_adults: params.adults,
             number_of_rooms: params.rooms,
           },
           currency: params.currency,
           rows: params.results_limit,
-        });
+          ...locationPart,
+        };
+        if (sortPart) request.sort = sortPart;
+
+        const result = await client.searchAccommodations(request);
 
         let hotels = result.hotels;
 
@@ -108,20 +152,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (filtered.length > 0) hotels = filtered;
         }
 
-        if (params.sort_by === "price") {
-          hotels.sort(function (a, b) {
-            return (a.price ? a.price.amount : 999999) - (b.price ? b.price.amount : 999999);
-          });
-        } else if (params.sort_by === "review_score") {
-          hotels.sort(function (a, b) { return (b.review_score ?? 0) - (a.review_score ?? 0); });
-        } else if (params.sort_by === "distance") {
-          hotels.sort(function (a, b) {
-            const da = a.location && a.location.distance_to_center != null ? a.location.distance_to_center : 999;
-            const db = b.location && b.location.distance_to_center != null ? b.location.distance_to_center : 999;
-            return da - db;
-          });
-        }
-
         const currency = result.currency ?? params.currency;
         const formatted = hotels.slice(0, params.results_limit).map(function (h) {
           return formatHotel(h, currency);
@@ -131,15 +161,16 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{
               type: "text",
-              text: "No hotels found in " + cityResult.name + " for " + checkin + " to " + checkout + ". Try without filters or different dates.",
+              text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout + ". Try a larger radius, different dates, or without filters.",
             }],
           };
         }
 
         const output: any = {
           success: true,
-          city: cityResult.name,
-          city_id: cityResult.city_id,
+          location: locationLabel,
+          city_id: cityIdForOutput,
+          search_mode: usingCoordinates ? "coordinates" : "city",
           checkin: checkin,
           checkout: checkout,
           nights: nights,
@@ -148,6 +179,11 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           hotels: formatted,
           currency: currency,
         };
+
+        if (usingCoordinates) {
+          output.radius_km = params.radius_km;
+          output.location_note = "Results are limited to " + params.radius_km + " km around the given point" + (sortPart && sortPart.by === "distance" ? ", sorted by distance (closest first)." : ".");
+        }
 
         if (datesAssumed) {
           output.dates_note = "User did not provide dates. These are SAMPLE prices for an assumed weekend (" + checkin + " to " + checkout + "). Tell the user these dates were assumed and that they can provide their own dates for exact offers.";

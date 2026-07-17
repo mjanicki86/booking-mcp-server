@@ -3,10 +3,16 @@ import { z } from "zod";
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const HotelSearchInputSchema = z.object({
-  city: z.string().min(2).max(100)
-    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Munich" (not "Muenchen"), "Rome" (not "Roma"). Always translate the city name to English before calling.'),
-  country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code (ISO 3166-1) of the city, e.g. "pl" for Poland, "nl" for Netherlands. Infer it from the city name if the user does not state it.'),
+  city: z.string().min(2).max(100).optional()
+    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. OPTIONAL if latitude/longitude are provided instead.'),
+  country: z.string().min(2).max(2).optional()
+    .describe('Two-letter lowercase country code (ISO 3166-1), e.g. "pl", "nl". REQUIRED when city is used; infer from the city name.'),
+  latitude: z.number().min(-90).max(90).optional()
+    .describe('Latitude of a specific point (landmark, station, address). Use INSTEAD of city when the user asks for hotels near a specific place, e.g. "near the Palace of Culture in Warsaw" -> 52.2318. Must be used together with longitude.'),
+  longitude: z.number().min(-180).max(180).optional()
+    .describe('Longitude of a specific point. Must be used together with latitude, e.g. 21.0060 for the Palace of Culture in Warsaw.'),
+  radius_km: z.number().min(0.1).max(50).default(3)
+    .describe('Search radius in kilometres around latitude/longitude (default 3). Set from the user request, e.g. "within 1 km" -> 1. Only used with coordinates.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe('Check-in date in YYYY-MM-DD format. OPTIONAL - if the user did not give dates, DO NOT ask them; omit this and a default date about 3 months ahead will be used.'),
   checkout: z.string().regex(dateRegex).optional()
@@ -26,7 +32,7 @@ export const HotelSearchInputSchema = z.object({
   results_limit: z.number().int().min(1).max(100).default(10)
     .describe("Maximum number of hotels to return, up to 100. Set this when the user asks for a specific number of results, e.g. 'show me 50 hotels' -> 50."),
   sort_by: z.string().default("popularity")
-    .describe('Sort by: "price", "review_score", "distance", or "popularity"'),
+    .describe('Sort by: "price", "review_score", "distance", or "popularity". "distance" works best with coordinates.'),
 });
 
 export type HotelSearchInput = z.infer<typeof HotelSearchInputSchema>;
