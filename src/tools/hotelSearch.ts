@@ -2,15 +2,30 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient, BookingApiRequestError, formatHotel } from "../services/bookingClient.js";
 import { resolveCityId } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
-import { HotelSearchOutput } from "../types.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
+
+// Domyslne daty przy braku dat od uzytkownika:
+// checkin = najblizszy piatek okolo 90 dni od dzis, checkout = +2 noce (weekend)
+function getDefaultDates(): { checkin: string; checkout: string } {
+  const base = new Date();
+  base.setDate(base.getDate() + 90);
+  const day = base.getDay(); // 0=niedziela ... 5=piatek
+  const toFriday = (5 - day + 7) % 7;
+  base.setDate(base.getDate() + toFriday);
+  const checkout = new Date(base);
+  checkout.setDate(checkout.getDate() + 2);
+  return {
+    checkin: base.toISOString().split("T")[0],
+    checkout: checkout.toISOString().split("T")[0],
+  };
+}
 
 export function registerHotelSearchTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels using Booking.com. Supported cities: Warszawa, Krakow, Amsterdam.\nArgs: city, checkin (YYYY-MM-DD), checkout (YYYY-MM-DD), adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if user explicitly requests it), results_limit, sort_by (price/review_score/distance/popularity).\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide using Booking.com. Dates are OPTIONAL: if the user did not provide dates, call this tool WITHOUT checkin/checkout instead of asking the user - sample prices for a weekend about 3 months ahead will be returned.\nArgs: city, country (2-letter code, infer from city), checkin (YYYY-MM-DD, optional), checkout (optional), adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if user explicitly requests it), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -21,16 +36,19 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     },
     async (params: HotelSearchInput) => {
 
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!dateRegex.test(params.checkin) || !dateRegex.test(params.checkout)) {
-        return {
-          content: [{ type: "text", text: "Error: checkin and checkout must be in YYYY-MM-DD format." }],
-          isError: true,
-        };
+      let checkin = params.checkin;
+      let checkout = params.checkout;
+      let datesAssumed = false;
+
+      if (!checkin || !checkout) {
+        const defaults = getDefaultDates();
+        checkin = checkin ?? defaults.checkin;
+        checkout = checkout ?? defaults.checkout;
+        datesAssumed = true;
       }
 
-      const checkinDate = new Date(params.checkin);
-      const checkoutDate = new Date(params.checkout);
+      const checkinDate = new Date(checkin);
+      const checkoutDate = new Date(checkout);
 
       if (checkoutDate <= checkinDate) {
         return {
@@ -39,12 +57,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         };
       }
 
-      const cityResult = resolveCityId(params.city);
+      const cityResult = await resolveCityId(client, params.city, params.country);
       if (!cityResult) {
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" not supported. Supported cities: Warszawa, Krakow, Amsterdam. Call booking_search_cities to check.",
+            text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code, or use booking_search_cities to search.",
           }],
           isError: true,
         };
@@ -55,8 +73,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       try {
         const result = await client.searchAccommodations({
           booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
-          checkin: params.checkin,
-          checkout: params.checkout,
+          checkin: checkin,
+          checkout: checkout,
           city: cityResult.city_id,
           guests: {
             number_of_adults: params.adults,
@@ -113,23 +131,27 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{
               type: "text",
-              text: "No hotels found in " + cityResult.name + " for " + params.checkin + " to " + params.checkout + ". Try without filters.",
+              text: "No hotels found in " + cityResult.name + " for " + checkin + " to " + checkout + ". Try without filters or different dates.",
             }],
           };
         }
 
-        const output: HotelSearchOutput = {
+        const output: any = {
           success: true,
           city: cityResult.name,
           city_id: cityResult.city_id,
-          checkin: params.checkin,
-          checkout: params.checkout,
+          checkin: checkin,
+          checkout: checkout,
           nights: nights,
           adults: params.adults,
           total_found: result.total_count,
           hotels: formatted,
           currency: currency,
         };
+
+        if (datesAssumed) {
+          output.dates_note = "User did not provide dates. These are SAMPLE prices for an assumed weekend (" + checkin + " to " + checkout + "). Tell the user these dates were assumed and that they can provide their own dates for exact offers.";
+        }
 
         const text = JSON.stringify(output, null, 2);
         return {

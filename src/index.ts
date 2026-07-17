@@ -2,22 +2,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express, { Request, Response } from "express";
+import { config } from "./config.js";
 import { BookingApiClient } from "./services/bookingClient.js";
 import { registerHotelSearchTool } from "./tools/hotelSearch.js";
 import { registerSearchCitiesTool } from "./tools/listCities.js";
 import { registerHotelDetailsTool } from "./tools/hotelDetails.js";
 import { registerFindHotelTool } from "./tools/findHotel.js";
 
-const BOOKING_API_KEY = process.env.BOOKING_API_KEY ?? "";
-const BOOKING_AFFILIATE_ID = process.env.BOOKING_AFFILIATE_ID ?? "";
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
-if (!BOOKING_API_KEY) {
-  console.error("Warning: BOOKING_API_KEY not set.");
-}
-if (!BOOKING_AFFILIATE_ID) {
-  console.error("Warning: BOOKING_AFFILIATE_ID not set.");
-}
+console.error("=== booking-mcp-server starting ===");
+console.error("=== Booking API URL: " + config.bookingApiBaseUrl + " ===");
 
 const app = express();
 app.use(express.json());
@@ -54,11 +49,11 @@ app.post("/mcp", async (req: Request, res: Response) => {
       await transport.handleRequest(req, res, req.body);
     } else {
       const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-      const apiClient = new BookingApiClient(BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+      const apiClient = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
 
       registerHotelSearchTool(server, apiClient);
-      registerSearchCitiesTool(server);
-      registerHotelDetailsTool(server, BOOKING_API_KEY, BOOKING_AFFILIATE_ID);
+      registerSearchCitiesTool(server, apiClient);
+      registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
       registerFindHotelTool(server, apiClient);
 
       transport = new StreamableHTTPServerTransport({

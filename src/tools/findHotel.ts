@@ -1,28 +1,25 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
+import { resolveCityId } from "../services/cityResolver.js";
 import { z } from "zod";
-import { CITY_ID_MAP } from "../constants.js";
 
 const FindHotelInputSchema = z.object({
   hotel_name: z.string().min(2).max(200)
     .describe("Hotel name to search for, e.g. \"ibis Amsterdam Centre\", \"Marriott Warsaw\""),
   city: z.string().min(2).max(100)
     .describe("City where the hotel is located, e.g. \"Amsterdam\", \"Warszawa\""),
+  country: z.string().min(2).max(2)
+    .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Infer it from the city name.'),
 });
 
 type FindHotelInput = z.infer<typeof FindHotelInputSchema>;
-
-function normalizeCityName(cityName: string): string {
-  return cityName.toLowerCase().trim()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
 
 export function registerFindHotelTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_find_hotel",
     {
       title: "Find Hotel by Name",
-      description: "Find a hotel by name to get its hotel_id, which can then be used with booking_get_hotel_details. Use this when the user asks about a specific hotel by name but has not provided dates. Does NOT require dates. Args: hotel_name (string): name of the hotel, city (string): city where hotel is located.",
+      description: "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used with booking_get_hotel_details. Use this when the user asks about a specific hotel by name but has not provided dates. Does NOT require dates. Args: hotel_name, city, country (2-letter code).",
       inputSchema: FindHotelInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -32,36 +29,36 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       },
     },
     async (params: FindHotelInput) => {
-      const normalized = normalizeCityName(params.city);
-      const cityEntry = CITY_ID_MAP[normalized];
+      const cityResult = await resolveCityId(client, params.city, params.country);
 
-      if (!cityEntry) {
+      if (!cityResult) {
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" not supported. Supported cities: Warszawa, Krakow, Amsterdam.",
+            text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code.",
           }],
           isError: true,
         };
       }
 
       try {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const dayAfter = new Date();
-        dayAfter.setDate(dayAfter.getDate() + 2);
+        // Szukamy w terminie ok. 90 dni do przodu - szeroka dostepnosc hoteli
+        const base = new Date();
+        base.setDate(base.getDate() + 90);
+        const co = new Date(base);
+        co.setDate(co.getDate() + 2);
 
-        const checkin = tomorrow.toISOString().split("T")[0];
-        const checkout = dayAfter.toISOString().split("T")[0];
+        const checkin = base.toISOString().split("T")[0];
+        const checkout = co.toISOString().split("T")[0];
 
         const result = await client.searchAccommodations({
           booker: { country: "nl", platform: "desktop" },
           checkin: checkin,
           checkout: checkout,
-          city: cityEntry.city_id,
+          city: cityResult.city_id,
           guests: { number_of_adults: 1, number_of_rooms: 1 },
           currency: "PLN",
-          rows: 20,
+          rows: 100,
         });
 
         if (result.hotels.length === 0) {

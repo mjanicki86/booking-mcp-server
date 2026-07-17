@@ -1,36 +1,47 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { BookingApiClient } from "../services/bookingClient.js";
 import { searchCities } from "../services/cityResolver.js";
 import { SearchCitiesInputSchema, SearchCitiesInput } from "../schemas/inputSchemas.js";
 
-export function registerSearchCitiesTool(server: McpServer): void {
+export function registerSearchCitiesTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_search_cities",
     {
-      title: "Search Supported Cities",
-      description: "List cities supported for hotel search. Use this to check if a city is available before calling booking_search_hotels.\nArgs:\n  - query: partial city name\n  - limit: max results (default 10)",
+      title: "Search Cities on Booking.com",
+      description: "Search for cities on Booking.com by name or partial name within a given country. Works for any country worldwide. Use this to find the exact city name if booking_search_hotels reports the city was not found.\nArgs:\n  - query: city name or partial name\n  - country: two-letter lowercase country code, e.g. \"pl\", \"nl\"\n  - limit: max results (default 10)",
       inputSchema: SearchCitiesInputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     async (params: SearchCitiesInput) => {
-      const cities = searchCities(params.query, params.limit);
-      if (cities.length === 0) {
+      try {
+        const cities = await searchCities(client, params.query, params.country, params.limit);
+        if (cities.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: "No cities found matching \"" + params.query + "\" in country \"" + params.country + "\". Check the spelling and the country code.",
+            }],
+          };
+        }
+        const output = { cities: cities, total: cities.length };
+        return {
+          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          structuredContent: output,
+        };
+      } catch (err) {
         return {
           content: [{
             type: "text",
-            text: "No supported cities found matching \"" + params.query + "\". Currently supported: Warszawa, Krakow, Amsterdam.",
+            text: "Error searching cities: " + (err instanceof Error ? err.message : String(err)),
           }],
+          isError: true,
         };
       }
-      const output = { cities: cities, total: cities.length };
-      return {
-        content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
-        structuredContent: output,
-      };
     }
   );
 }
