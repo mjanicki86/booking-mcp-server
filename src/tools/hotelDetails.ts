@@ -61,7 +61,15 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   free: "bezplatne",
   private: "prywatne",
   on_site: "na miejscu",
+  offsite: "poza obiektem",
   reservation_needed: "wymagana rezerwacja",
+};
+
+// Tlumaczenie trybow oplat (facility_details)
+const CHARGE_MODE_NAMES: Record<string, string> = {
+  free: "bezplatnie",
+  paid: "platne",
+  charges_may_apply: "moga obowiazywac oplaty",
 };
 
 function extractText(field: any): string | null {
@@ -76,11 +84,9 @@ function extractText(field: any): string | null {
 // Zamienia wpis udogodnienia (numer + atrybuty) na czytelny tekst,
 // np. {id: 2, attributes: ["paid"]} -> "parking (platne)"
 function facilityToText(f: any): string | null {
-  // Najpierw sprobuj nazwy wprost z API (niektore wersje ja zwracaja)
   const directName = extractText(f.name) ?? extractText(f.facility_name);
   const baseName = directName ?? FACILITY_NAMES[f.id] ?? null;
   if (!baseName) {
-    // Nieznany numer - pokaz go, zeby dalo sie latwo uzupelnic slownik
     return f.id != null ? "udogodnienie #" + f.id : null;
   }
 
@@ -96,6 +102,36 @@ function facilityToText(f: any): string | null {
   return attrs.length > 0 ? baseName + " (" + attrs.join(", ") + ")" : baseName;
 }
 
+// Odczyt strukturalnych szczegolow parkingu z facility_details (jesli API je zwraca)
+function parseParkingDetails(fd: any, currency: string | null): any[] | null {
+  if (!fd || !Array.isArray(fd.parking_facilities) || fd.parking_facilities.length === 0) {
+    return null;
+  }
+  return fd.parking_facilities.map(function (p: any) {
+    const entry: any = {};
+    if (p.type != null) entry.type = p.type;
+    if (p.price != null) entry.price = p.price;
+    if (currency && p.price != null && p.price > 0) entry.currency = currency;
+    if (p.charge_mode != null) entry.charge_mode = CHARGE_MODE_NAMES[p.charge_mode] ?? p.charge_mode;
+    if (p.location != null) entry.location = p.location;
+    if (p.reservation != null) entry.reservation = p.reservation;
+    return entry;
+  });
+}
+
+// Odczyt strukturalnych szczegolow internetu z facility_details (jesli sa)
+function parseWifiDetails(fd: any, currency: string | null): any | null {
+  const w = fd?.internet_facility;
+  if (!w) return null;
+  const entry: any = {};
+  if (w.connection_type != null) entry.connection_type = w.connection_type;
+  if (w.price != null) entry.price = w.price;
+  if (currency && w.price != null && w.price > 0) entry.currency = currency;
+  if (w.charge_mode != null) entry.charge_mode = CHARGE_MODE_NAMES[w.charge_mode] ?? w.charge_mode;
+  if (w.coverage != null) entry.coverage = w.coverage;
+  return entry;
+}
+
 export function registerHotelDetailsTool(
   server: McpServer,
   apiKey: string,
@@ -105,7 +141,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel including facilities (parking, pool, gym, WiFi, restaurant, air conditioning, spa), room types, check-in/out policies, payment options, and important information such as parking fees and pet policies. Use this tool whenever the user asks about a hotel's amenities, facilities, parking, prices of extras, or policies. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel including facilities (parking with structured price data when available, pool, gym, WiFi, restaurant, air conditioning, spa), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. Use this tool whenever the user asks about a hotel's amenities, facilities, parking, breakfast price, prices of extras, or policies. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -138,7 +174,7 @@ export function registerHotelDetailsTool(
 
         const responseText = await response.text();
         console.error("=== Hotel details status: " + response.status);
-        console.error("=== Hotel details body: " + responseText.slice(0, 2000));
+        console.error("=== Hotel details body: " + responseText.slice(0, 6000));
 
         if (!response.ok) {
           return {
@@ -163,6 +199,7 @@ export function registerHotelDetailsTool(
         }
 
         const hotel = hotels[0];
+        const hotelCurrency: string | null = typeof hotel.currency === "string" ? hotel.currency : null;
 
         const name = extractText(hotel.name) ?? "Unknown";
         const description = extractText(hotel.description?.text) ?? extractText(hotel.description) ?? null;
@@ -175,6 +212,23 @@ export function registerHotelDetailsTool(
           for (const f of hotel.facilities) {
             const ftext = facilityToText(f);
             if (ftext) facilities.push(ftext);
+          }
+        }
+
+        // Strukturalne szczegoly: parking i WiFi (jesli API je zwraca)
+        const parkingDetails = parseParkingDetails(hotel.facility_details, hotelCurrency);
+        const wifiDetails = parseWifiDetails(hotel.facility_details, hotelCurrency);
+
+        // Strukturalne ceny posilkow (np. sniadanie)
+        let mealPrices: any = null;
+        if (hotel.meal_prices && typeof hotel.meal_prices === "object") {
+          const mp: any = {};
+          if (hotel.meal_prices.breakfast != null) mp.breakfast = hotel.meal_prices.breakfast;
+          if (hotel.meal_prices.lunch != null) mp.lunch = hotel.meal_prices.lunch;
+          if (hotel.meal_prices.dinner != null) mp.dinner = hotel.meal_prices.dinner;
+          if (Object.keys(mp).length > 0) {
+            if (hotelCurrency) mp.currency = hotelCurrency;
+            mealPrices = mp;
           }
         }
 
@@ -206,23 +260,26 @@ export function registerHotelDetailsTool(
 
         const address = hotel.address
           ? ((hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")).trim()
-          : null;
+          : (extractText(hotel.location?.address) ?? null);
 
-        const output = {
+        const output: any = {
           hotel_id: params.hotel_id,
           name: name,
           address: address || null,
-          stars: hotel.class ?? hotel.star_rating ?? null,
+          stars: hotel.class ?? hotel.star_rating ?? hotel.rating?.stars ?? null,
+          review_score: hotel.rating?.review_score ?? null,
+          review_count: hotel.rating?.number_of_reviews ?? null,
           checkin_from: checkinFrom,
           checkout_until: checkoutTo,
           description: description ? description.slice(0, 1500) : null,
-          // Wazne informacje zawieraja m.in. ceny parkingu i zasady dot. zwierzat
-          // - nie ucinamy ich, zeby agent mogl odpowiadac na pytania o oplaty
+          // Wazne informacje zawieraja m.in. ceny i zasady - nie ucinamy ich
           important_information: importantInfo ?? null,
           facilities: facilities,
+          parking_details: parkingDetails,
+          wifi_details: wifiDetails,
+          meal_prices: mealPrices,
           rooms: rooms,
           payment_methods: paymentMethods,
-          parking: hotel.parking ?? null,
           pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
           url: hotel.url ?? null,
           data_source: "Booking.com API",
