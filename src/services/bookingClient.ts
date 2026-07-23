@@ -51,13 +51,15 @@ export class BookingApiClient {
     const raw = await this.post<any>("/accommodations/search", request);
     const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
 
-    // API 3.1 nie zwraca nazw hoteli w wynikach wyszukiwania.
+    // API 3.1 nie zwraca nazw ani wspolrzednych w wynikach wyszukiwania.
     // Dociagamy je jednym zbiorczym zapytaniem o szczegoly wszystkich znalezionych hoteli.
     const ids = rawHotels
       .map((h: any) => h.hotel_id ?? h.id)
       .filter((id: any) => id != null);
 
     const namesById: Record<number, string> = {};
+    const coordsById: Record<number, { latitude: number; longitude: number }> = {};
+
     if (ids.length > 0) {
       try {
         const details = await this.post<any>("/accommodations/details", {
@@ -69,18 +71,23 @@ export class BookingApiClient {
           if (d.id != null && nm) {
             namesById[d.id] = nm;
           }
+          const lat = d.location?.coordinates?.latitude;
+          const lon = d.location?.coordinates?.longitude;
+          if (d.id != null && typeof lat === "number" && typeof lon === "number") {
+            coordsById[d.id] = { latitude: lat, longitude: lon };
+          }
         }
       } catch (err) {
-        // Nazwy to dodatek - jesli sie nie uda, lista i tak wraca (z ID zamiast nazw)
+        // Nazwy/wspolrzedne to dodatek - jesli sie nie uda, lista i tak wraca
         console.error(
-          "=== Nie udalo sie pobrac nazw hoteli: " +
+          "=== Nie udalo sie pobrac nazw/wspolrzednych hoteli: " +
             (err instanceof Error ? err.message : String(err))
         );
       }
     }
 
     return {
-      hotels: rawHotels.map((h: any) => normalizeHotel(h, namesById)),
+      hotels: rawHotels.map((h: any) => normalizeHotel(h, namesById, coordsById)),
       total_count: raw.total_count ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
     };
@@ -109,7 +116,11 @@ function extractLocalizedText(field: any): string | null {
   return null;
 }
 
-function normalizeHotel(raw: any, namesById: Record<number, string>): Hotel {
+function normalizeHotel(
+  raw: any,
+  namesById: Record<number, string>,
+  coordsById: Record<number, { latitude: number; longitude: number }>
+): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
   // Format 3.1: price.total / price.book to zwykle liczby, currency to tekst (np. "PLN")
@@ -135,6 +146,8 @@ function normalizeHotel(raw: any, namesById: Record<number, string>): Hotel {
     raw.hotel_name ??
     "Hotel " + hotelId;
 
+  const coords = coordsById[hotelId];
+
   return {
     hotel_id: hotelId,
     name: name,
@@ -152,6 +165,8 @@ function normalizeHotel(raw: any, namesById: Record<number, string>): Hotel {
       address: raw.address,
       city: raw.city,
       distance_to_center: raw.distance,
+      latitude: coords?.latitude,
+      longitude: coords?.longitude,
     },
     meal_plans: raw.meal_plan ? [raw.meal_plan] : undefined,
     url: raw.url ?? raw.deep_link_url,
@@ -174,6 +189,7 @@ export function formatHotel(hotel: Hotel, currency: string): FormattedHotel {
     address: hotel.location?.address ?? hotel.location?.city ?? null,
     distance_to_center_km: hotel.location?.distance_to_center != null
       ? Math.round(hotel.location.distance_to_center * 10) / 10 : null,
+    distance_km: null,
     breakfast_included: hotel.meal_plans?.some(function (mp) {
       return mp.code === "breakfast_included" || (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
     }) ?? false,

@@ -22,9 +22,7 @@ function getDefaultDates(): { checkin: string; checkout: string } {
 
 // Ile wynikow pobrac z Booking.com PRZED naszym sortowaniem/filtrowaniem.
 // Przy wyszukiwaniu po wspolrzednych pobieramy szeroko (100), bo Booking.com
-// zwraca hotele w wlasnej, nieprzewidywalnej kolejnosci - hotel faktycznie
-// najblizszy punktowi moze nie znalezc sie w pierwszych 10 zwroconych rekordach.
-// Przy zwyklym wyszukiwaniu miasta zostajemy przy zadanym limicie (szybciej).
+// zwraca hotele w wlasnej, nieprzewidywalnej kolejnosci.
 function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
   if (usingCoordinates) {
     return Math.max(resultsLimit, 100);
@@ -32,12 +30,29 @@ function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
   return resultsLimit;
 }
 
+// Odleglosc w km miedzy dwoma punktami (wzor Haversine).
+// Uzywamy tego zamiast ufac sortowaniu "distance" z Booking.com API,
+// ktore w praktyce nie jest czysta odlegloscia geograficzna.
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 export function registerHotelSearchTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results.\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results (real calculated distance, not just the API's own ordering).\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -112,10 +127,11 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         cityIdForOutput = cityResult.city_id;
       }
 
+      // Sortowanie po stronie API - tylko dla price/review_score (liczbowe, wiarygodne).
+      // "distance" liczymy SAMI po pobraniu wynikow (patrz nizej) - sortowanie
+      // "distance" z samego Booking.com API okazalo sie zawodne w praktyce.
       let sortPart: any = undefined;
-      if (params.sort_by === "distance" && usingCoordinates) {
-        sortPart = { by: "distance", direction: "ascending" };
-      } else if (params.sort_by === "price") {
+      if (params.sort_by === "price") {
         sortPart = { by: "price", direction: "ascending" };
       } else if (params.sort_by === "review_score") {
         sortPart = { by: "review_score", direction: "descending" };
@@ -162,9 +178,31 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (filtered.length > 0) hotels = filtered;
         }
 
+        // Policz prawdziwa odleglosc dla kazdego hotelu, gdy szukamy po wspolrzednych.
+        const distanceById = new Map<number, number>();
+        if (usingCoordinates) {
+          for (const h of hotels) {
+            const lat = h.location?.latitude;
+            const lon = h.location?.longitude;
+            if (typeof lat === "number" && typeof lon === "number") {
+              distanceById.set(h.hotel_id, haversineKm(params.latitude!, params.longitude!, lat, lon));
+            }
+          }
+          if (params.sort_by === "distance") {
+            hotels = hotels.slice().sort(function (a, b) {
+              const da = distanceById.has(a.hotel_id) ? distanceById.get(a.hotel_id)! : Infinity;
+              const db = distanceById.has(b.hotel_id) ? distanceById.get(b.hotel_id)! : Infinity;
+              return da - db;
+            });
+          }
+        }
+
         const currency = result.currency ?? params.currency;
         const formatted = hotels.slice(0, params.results_limit).map(function (h) {
-          return formatHotel(h, currency);
+          const fh = formatHotel(h, currency);
+          const d = distanceById.get(h.hotel_id);
+          fh.distance_km = d != null ? Math.round(d * 10) / 10 : null;
+          return fh;
         });
 
         if (formatted.length === 0) {
@@ -192,7 +230,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         if (usingCoordinates) {
           output.radius_km = params.radius_km;
-          output.location_note = "Results are limited to " + params.radius_km + " km around the given point" + (sortPart && sortPart.by === "distance" ? ", sorted by distance (closest first)." : ".");
+          output.location_note = "Results are limited to " + params.radius_km + " km around the given point" +
+            (params.sort_by === "distance"
+              ? ", sorted by real calculated distance (closest first). distance_km on each hotel is the actual straight-line distance to the given point."
+              : ". Each hotel includes distance_km (straight-line distance to the given point) even though results are not sorted by it.");
         } else {
           output.location_note = "This is a city-wide search. It does NOT filter by distance to any specific landmark. If the user asked about a specific place, redo the search with coordinates instead.";
         }

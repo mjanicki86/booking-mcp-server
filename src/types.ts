@@ -2,14 +2,12 @@ export interface BookerInfo {
   country: string;
   platform: string;
 }
-
 export interface GuestsInfo {
   number_of_adults: number;
   number_of_rooms: number;
   number_of_children?: number;
   children_ages?: number[];
 }
-
 export interface AccommodationSearchRequest {
   booker: BookerInfo;
   checkin: string;
@@ -20,13 +18,11 @@ export interface AccommodationSearchRequest {
   rows?: number;
   offset?: number;
 }
-
 export interface PriceInfo {
   amount: number;
   currency: string;
   amount_per_night?: number;
 }
-
 export interface Hotel {
   hotel_id: number;
   name: string;
@@ -40,25 +36,24 @@ export interface Hotel {
     city?: string;
     address?: string;
     distance_to_center?: number;
+    latitude?: number;
+    longitude?: number;
   };
   meal_plans?: { code?: string; name?: string }[];
   url?: string;
   property_type?: string;
   free_cancellation?: boolean;
 }
-
 export interface SearchResult {
   hotels: Hotel[];
   total_count: number;
   currency?: string;
 }
-
 export interface BookingApiError {
   status: number;
   message: string;
   details?: string;
 }
-
 export interface FormattedHotel {
   hotel_id: number;
   name: string;
@@ -71,12 +66,12 @@ export interface FormattedHotel {
   currency: string;
   address: string | null;
   distance_to_center_km: number | null;
+  distance_km: number | null;
   breakfast_included: boolean;
   free_cancellation: boolean;
   property_type: string | null;
   booking_url: string | null;
 }
-
 export interface HotelSearchOutput {
   [key: string]: unknown;
   success: boolean;
@@ -90,13 +85,11 @@ export interface HotelSearchOutput {
   hotels: FormattedHotel[];
   currency: string;
 }
-
 export interface CityEntry {
   city_id: number;
   name: string;
   country: string;
 }
-
 export interface CityListOutput {
   cities: CityEntry[];
   total: number;
