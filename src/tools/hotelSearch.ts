@@ -25,7 +25,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes:\n  1. city + country: for general city searches, e.g. 'hotels in Warsaw'. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): when the user asks for hotels near a specific place, e.g. 'hotels within 1 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 1. Provide the coordinates of the place yourself. Combine with sort_by 'distance' for closest-first results.\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nReturns hotels with prices, booking URLs, and (in coordinate mode) distance data.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results.\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -71,7 +71,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
       const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
 
-      // Zbuduj czesc lokalizacyjna zapytania: wspolrzedne ALBO miasto
       let locationPart: any;
       let locationLabel: string;
       let cityIdForOutput: number | null = null;
@@ -101,7 +100,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         cityIdForOutput = cityResult.city_id;
       }
 
-      // Sortowanie po stronie API (dziala najlepiej dla trybu wspolrzednych)
       let sortPart: any = undefined;
       if (params.sort_by === "distance" && usingCoordinates) {
         sortPart = { by: "distance", direction: "ascending" };
@@ -183,6 +181,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (usingCoordinates) {
           output.radius_km = params.radius_km;
           output.location_note = "Results are limited to " + params.radius_km + " km around the given point" + (sortPart && sortPart.by === "distance" ? ", sorted by distance (closest first)." : ".");
+        } else {
+          output.location_note = "This is a city-wide search. It does NOT filter by distance to any specific landmark. If the user asked about a specific place, redo the search with coordinates instead.";
         }
 
         if (datesAssumed) {

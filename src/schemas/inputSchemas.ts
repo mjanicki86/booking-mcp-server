@@ -4,15 +4,15 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const HotelSearchInputSchema = z.object({
   city: z.string().min(2).max(100).optional()
-    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. OPTIONAL if latitude/longitude are provided instead.'),
+    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. Use ONLY for general "hotels in [city]" requests. OPTIONAL if latitude/longitude are provided instead.'),
   country: z.string().min(2).max(2).optional()
     .describe('Two-letter lowercase country code (ISO 3166-1), e.g. "pl", "nl". REQUIRED when city is used; infer from the city name.'),
   latitude: z.number().min(-90).max(90).optional()
-    .describe('Latitude of a specific point (landmark, station, address). Use INSTEAD of city when the user asks for hotels near a specific place, e.g. "near the Palace of Culture in Warsaw" -> 52.2318. Must be used together with longitude.'),
+    .describe('Latitude of a specific point (landmark, station, address). MANDATORY (together with longitude) whenever the user mentions a specific place or distance, e.g. "near the Palace of Culture", "within 2 km of the airport", "close to the train station". Do NOT just search by city and claim proximity - you MUST supply real coordinates for the named place, e.g. 52.2318 for the Palace of Culture in Warsaw. If you do not know the exact coordinates of the place, say so instead of guessing or silently falling back to a city search.'),
   longitude: z.number().min(-180).max(180).optional()
-    .describe('Longitude of a specific point. Must be used together with latitude, e.g. 21.0060 for the Palace of Culture in Warsaw.'),
+    .describe('Longitude of a specific point. Must be used together with latitude, e.g. 21.0060 for the Palace of Culture in Warsaw. See latitude description - this is mandatory whenever the user asks for hotels near/within X km of a named place.'),
   radius_km: z.number().min(0.1).max(50).default(3)
-    .describe('Search radius in kilometres around latitude/longitude (default 3). Set from the user request, e.g. "within 1 km" -> 1. Only used with coordinates.'),
+    .describe('Search radius in kilometres around latitude/longitude (default 3). Set from the user request, e.g. "within 1 km" -> 1, "within 2 km" -> 2. Only used with coordinates.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe('Check-in date in YYYY-MM-DD format. OPTIONAL - if the user did not give dates, DO NOT ask them; omit this and a default date about 3 months ahead will be used.'),
   checkout: z.string().regex(dateRegex).optional()

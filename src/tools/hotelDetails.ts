@@ -141,7 +141,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel including facilities (parking with structured price data when available, pool, gym, WiFi, restaurant, air conditioning, spa), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. Use this tool whenever the user asks about a hotel's amenities, facilities, parking, breakfast price, prices of extras, or policies. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -215,11 +215,9 @@ export function registerHotelDetailsTool(
           }
         }
 
-        // Strukturalne szczegoly: parking i WiFi (jesli API je zwraca)
         const parkingDetails = parseParkingDetails(hotel.facility_details, hotelCurrency);
         const wifiDetails = parseWifiDetails(hotel.facility_details, hotelCurrency);
 
-        // Strukturalne ceny posilkow (np. sniadanie)
         let mealPrices: any = null;
         if (hotel.meal_prices && typeof hotel.meal_prices === "object") {
           const mp: any = {};
@@ -272,7 +270,6 @@ export function registerHotelDetailsTool(
           checkin_from: checkinFrom,
           checkout_until: checkoutTo,
           description: description ? description.slice(0, 1500) : null,
-          // Wazne informacje zawieraja m.in. ceny i zasady - nie ucinamy ich
           important_information: importantInfo ?? null,
           facilities: facilities,
           parking_details: parkingDetails,
