@@ -20,6 +20,18 @@ function getDefaultDates(): { checkin: string; checkout: string } {
   };
 }
 
+// Ile wynikow pobrac z Booking.com PRZED naszym sortowaniem/filtrowaniem.
+// Przy wyszukiwaniu po wspolrzednych pobieramy szeroko (100), bo Booking.com
+// zwraca hotele w wlasnej, nieprzewidywalnej kolejnosci - hotel faktycznie
+// najblizszy punktowi moze nie znalezc sie w pierwszych 10 zwroconych rekordach.
+// Przy zwyklym wyszukiwaniu miasta zostajemy przy zadanym limicie (szybciej).
+function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
+  if (usingCoordinates) {
+    return Math.max(resultsLimit, 100);
+  }
+  return resultsLimit;
+}
+
 export function registerHotelSearchTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_search_hotels",
@@ -119,7 +131,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             number_of_rooms: params.rooms,
           },
           currency: params.currency,
-          rows: params.results_limit,
+          rows: rowsToFetch(usingCoordinates, params.results_limit),
           ...locationPart,
         };
         if (sortPart) request.sort = sortPart;
