@@ -154,11 +154,14 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (maxTotalPrice != null) pricePart.maximum = maxTotalPrice;
       }
 
-      // Ocena: pole "rating" na najwyzszym poziomie
+      // Ocena: pole "rating" na najwyzszym poziomie.
+      // Booking.com wymaga INTEGER dla minimum_review_score (400 error na liczby dziesietne,
+      // np. 8.5) - zaokraglamy w gore do API, ale filtrujemy po stronie serwera
+      // dokladna, oryginalna wartoscia (8.5), wiec precyzja nie ginie.
       let ratingPart: any = undefined;
       if (params.min_review_score != null || params.min_stars != null) {
         ratingPart = {};
-        if (params.min_review_score != null) ratingPart.minimum_review_score = params.min_review_score;
+        if (params.min_review_score != null) ratingPart.minimum_review_score = Math.ceil(params.min_review_score);
         if (params.min_stars != null) {
           const starsArr: number[] = [];
           for (let s = params.min_stars; s <= 5; s++) starsArr.push(s);
