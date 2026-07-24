@@ -43,6 +43,8 @@ export interface Hotel {
   url?: string;
   property_type?: string;
   free_cancellation?: boolean;
+  facilities?: number[];
+  accommodation_type_id?: number;
 }
 export interface SearchResult {
   hotels: Hotel[];

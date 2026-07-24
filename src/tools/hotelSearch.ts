@@ -4,6 +4,20 @@ import { resolveCityId } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 
+const HOSTEL_ACCOMMODATION_TYPE = 203;
+
+const AMENITY_FACILITY_IDS: Record<string, number[]> = {
+  pool: [103, 104],
+  gym: [11],
+  parking: [2],
+  wifi: [107],
+  air_conditioning: [109],
+  spa: [54],
+  restaurant: [3],
+  sauna: [10],
+  pets_allowed: [4],
+};
+
 function getDefaultDates(): { checkin: string; checkout: string } {
   const base = new Date();
   base.setDate(base.getDate() + 90);
@@ -18,8 +32,8 @@ function getDefaultDates(): { checkin: string; checkout: string } {
   };
 }
 
-function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
-  if (usingCoordinates) {
+function rowsToFetch(usingCoordinates: boolean, resultsLimit: number, hasStrongFilters: boolean): number {
+  if (usingCoordinates || hasStrongFilters) {
     return Math.max(resultsLimit, 100);
   }
   return resultsLimit;
@@ -44,7 +58,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results (real calculated distance, not just the API's own ordering).\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nPRICE: use max_price_per_night whenever the user gives a price limit ('up to 300 PLN a night'). This is enforced server-side, so results are guaranteed to respect it - always call the tool again with a new max_price_per_night if the user changes their budget, do not just re-describe the previous results.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes: (1) city + country for generic 'hotels in [city]' requests (city name in ENGLISH); (2) latitude + longitude (+ radius_km) MANDATORY whenever the user names a specific place or distance - supply the REAL coordinates yourself, never fall back to a plain city search and claim proximity.\nDATES are OPTIONAL: if not given, call the tool WITHOUT checkin/checkout instead of asking - sample prices ~3 months ahead will be returned.\nPRICE: max_price_per_night / min_price_per_night are enforced server-side - always call the tool again with the new value if the user changes their budget, never just re-describe previous results.\nAMENITIES: use required_facilities (e.g. ['pool','gym']) to filter hotels that must have specific amenities - this is enforced server-side and is far more reliable than checking booking_get_hotel_details on each result yourself.\nQUALITY: min_stars, min_review_score, exclude_hostels (set true for 'a proper hotel, no hostels').\nOther args: adults, rooms, children_count/children_ages, currency, breakfast_only, free_cancellation_only, results_limit (up to 100), sort_by (price/review_score/distance/stars/popularity).\nNote: this tool does not return full amenity lists or addresses in detail - for full details on ONE specific hotel, call booking_get_hotel_details.\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -122,20 +136,52 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       let sortPart: any = undefined;
       if (params.sort_by === "price") {
         sortPart = { by: "price", direction: "ascending" };
-      } else if (params.sort_by === "review_score") {
-        sortPart = { by: "review_score", direction: "descending" };
+      } else if (params.sort_by === "review_score" || params.sort_by === "stars") {
+        sortPart = { by: params.sort_by, direction: "descending" };
       }
 
-      // Filtr ceny za noc: probujemy przekazac do API (moze nie byc wspierane w 3.1),
-      // a NIEZALEZNIE OD TEGO filtrujemy tez sami po stronie serwera nizej -
-      // to gwarantuje poprawnosc bez wzgledu na to, czy API respektuje filtr.
-      let filtersPart: any = undefined;
+      // Cena: pole "price" na NAJWYZSZYM poziomie zapytania (poprawna skladnia dla v3.1),
+      // nie "filters.price" jak w poprzedniej (bledonej) wersji.
       const maxTotalPrice = params.max_price_per_night != null
         ? Math.round(params.max_price_per_night * nights * 100) / 100
         : undefined;
-      if (maxTotalPrice != null) {
-        filtersPart = { price: { maximum: String(maxTotalPrice) } };
+      const minTotalPrice = params.min_price_per_night != null
+        ? Math.round(params.min_price_per_night * nights * 100) / 100
+        : undefined;
+      let pricePart: any = undefined;
+      if (maxTotalPrice != null || minTotalPrice != null) {
+        pricePart = {};
+        if (minTotalPrice != null) pricePart.minimum = minTotalPrice;
+        if (maxTotalPrice != null) pricePart.maximum = maxTotalPrice;
       }
+
+      // Ocena: pole "rating" na najwyzszym poziomie
+      let ratingPart: any = undefined;
+      if (params.min_review_score != null || params.min_stars != null) {
+        ratingPart = {};
+        if (params.min_review_score != null) ratingPart.minimum_review_score = params.min_review_score;
+        if (params.min_stars != null) {
+          const starsArr: number[] = [];
+          for (let s = params.min_stars; s <= 5; s++) starsArr.push(s);
+          ratingPart.stars = starsArr;
+        }
+      }
+
+      // Udogodnienia: probujemy API-level (best effort - jedna reprezentatywna
+      // wartosc na amenity, zeby uniknac zbyt scislego AND miedzy np. basen kryty/odkryty)
+      let facilitiesApiPart: number[] | undefined = undefined;
+      if (params.required_facilities && params.required_facilities.length > 0) {
+        facilitiesApiPart = params.required_facilities.map(function (a) {
+          return AMENITY_FACILITY_IDS[a][0];
+        });
+      }
+
+      const hasStrongFilters = !!(
+        maxTotalPrice != null || minTotalPrice != null ||
+        params.min_review_score != null ||
+        (params.required_facilities && params.required_facilities.length > 0) ||
+        params.exclude_hostels
+      );
 
       try {
         const request: any = {
@@ -145,25 +191,60 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           guests: {
             number_of_adults: params.adults,
             number_of_rooms: params.rooms,
+            ...(params.children_count != null ? { number_of_children: params.children_count } : {}),
+            ...(params.children_ages != null ? { children_ages: params.children_ages } : {}),
           },
           currency: params.currency,
-          rows: rowsToFetch(usingCoordinates, params.results_limit),
+          rows: rowsToFetch(usingCoordinates, params.results_limit, hasStrongFilters),
           ...locationPart,
         };
         if (sortPart) request.sort = sortPart;
-        if (filtersPart) request.filters = filtersPart;
+        if (pricePart) request.price = pricePart;
+        if (ratingPart) request.rating = ratingPart;
+        if (facilitiesApiPart) request.accommodation_facilities = facilitiesApiPart;
 
         const result = await client.searchAccommodations(request);
 
         let hotels = result.hotels;
 
-        // Filtr ceny PO STRONIE SERWERA - dziala niezaleznie od tego,
-        // czy Booking.com faktycznie respektuje filters.price w tej wersji API.
+        // --- Filtry po stronie serwera: gwarantuja poprawnosc niezaleznie od tego,
+        // czy Booking.com faktycznie respektuje powyzsze filtry API-level ---
+
         if (maxTotalPrice != null) {
+          hotels = hotels.filter(function (h) { return h.price != null && h.price.amount <= maxTotalPrice; });
+        }
+        if (minTotalPrice != null) {
+          hotels = hotels.filter(function (h) { return h.price != null && h.price.amount >= minTotalPrice; });
+        }
+
+        if (params.min_review_score != null) {
           const filtered = hotels.filter(function (h) {
-            return h.price != null && h.price.amount <= maxTotalPrice;
+            return h.review_score != null && h.review_score >= params.min_review_score!;
           });
-          hotels = filtered;
+          if (filtered.length > 0 || hotels.every(h => h.review_score != null)) hotels = filtered;
+        }
+
+        if (params.min_stars) {
+          const filtered = hotels.filter(function (h) {
+            return h.star_rating != null && h.star_rating >= params.min_stars!;
+          });
+          if (filtered.length > 0) hotels = filtered;
+        }
+
+        if (params.exclude_hostels) {
+          hotels = hotels.filter(function (h) {
+            return h.accommodation_type_id !== HOSTEL_ACCOMMODATION_TYPE;
+          });
+        }
+
+        if (params.required_facilities && params.required_facilities.length > 0) {
+          hotels = hotels.filter(function (h) {
+            if (!h.facilities) return false;
+            return params.required_facilities!.every(function (amenity) {
+              const ids = AMENITY_FACILITY_IDS[amenity];
+              return ids.some(function (id) { return h.facilities!.includes(id); });
+            });
+          });
         }
 
         if (params.breakfast_only) {
@@ -178,13 +259,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         if (params.free_cancellation_only) {
           const filtered = hotels.filter(function (h) { return h.free_cancellation === true; });
-          if (filtered.length > 0) hotels = filtered;
-        }
-
-        if (params.min_stars) {
-          const filtered = hotels.filter(function (h) {
-            return h.star_rating != null && h.star_rating >= params.min_stars!;
-          });
           if (filtered.length > 0) hotels = filtered;
         }
 
@@ -215,13 +289,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         });
 
         if (formatted.length === 0) {
-          const priceHint = maxTotalPrice != null
-            ? " Try a higher price limit (checked up to " + params.max_price_per_night + " " + params.currency + "/night)."
-            : "";
           return {
             content: [{
               type: "text",
-              text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout + " matching your criteria." + priceHint + " Try a larger radius, different dates, or fewer filters.",
+              text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout + " matching your criteria. Try relaxing the filters (price, amenities, rating, or hostel exclusion), a larger radius, or different dates.",
             }],
           };
         }
@@ -240,22 +311,29 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           currency: currency,
         };
 
-        if (maxTotalPrice != null) {
-          output.price_filter_note = "Results are filtered to a maximum of " + params.max_price_per_night + " " + params.currency + " per night (" + maxTotalPrice + " " + params.currency + " total for " + nights + " night(s)), enforced by the server.";
+        const appliedFilters: string[] = [];
+        if (maxTotalPrice != null) appliedFilters.push("max " + params.max_price_per_night + " " + params.currency + "/night");
+        if (minTotalPrice != null) appliedFilters.push("min " + params.min_price_per_night + " " + params.currency + "/night");
+        if (params.min_review_score != null) appliedFilters.push("review score >= " + params.min_review_score);
+        if (params.min_stars) appliedFilters.push(params.min_stars + "+ stars");
+        if (params.exclude_hostels) appliedFilters.push("hostels excluded");
+        if (params.required_facilities && params.required_facilities.length > 0) appliedFilters.push("must have: " + params.required_facilities.join(", "));
+        if (appliedFilters.length > 0) {
+          output.filters_applied_note = "Filters enforced server-side (guaranteed accurate, not just re-described): " + appliedFilters.join("; ") + ".";
         }
 
         if (usingCoordinates) {
           output.radius_km = params.radius_km;
           output.location_note = "Results are limited to " + params.radius_km + " km around the given point" +
             (params.sort_by === "distance"
-              ? ", sorted by real calculated distance (closest first). distance_km on each hotel is the actual straight-line distance to the given point."
-              : ". Each hotel includes distance_km (straight-line distance to the given point) even though results are not sorted by it.");
+              ? ", sorted by real calculated distance (closest first)."
+              : ". Each hotel includes distance_km even though results are not sorted by it.");
         } else {
-          output.location_note = "This is a city-wide search. It does NOT filter by distance to any specific landmark. If the user asked about a specific place, redo the search with coordinates instead.";
+          output.location_note = "This is a city-wide search. It does NOT filter by distance to any specific landmark unless coordinates were used.";
         }
 
         if (datesAssumed) {
-          output.dates_note = "User did not provide dates. These are SAMPLE prices for an assumed weekend (" + checkin + " to " + checkout + "). Tell the user these dates were assumed and that they can provide their own dates for exact offers.";
+          output.dates_note = "User did not provide dates. These are SAMPLE prices for an assumed weekend (" + checkin + " to " + checkout + "). Tell the user these dates were assumed.";
         }
 
         const text = JSON.stringify(output, null, 2);

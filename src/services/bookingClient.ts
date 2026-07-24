@@ -51,19 +51,20 @@ export class BookingApiClient {
     const raw = await this.post<any>("/accommodations/search", request);
     const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
 
-    // API 3.1 nie zwraca nazw ani wspolrzednych w wynikach wyszukiwania.
-    // Dociagamy je jednym zbiorczym zapytaniem o szczegoly wszystkich znalezionych hoteli.
     const ids = rawHotels
       .map((h: any) => h.hotel_id ?? h.id)
       .filter((id: any) => id != null);
 
     const namesById: Record<number, string> = {};
     const coordsById: Record<number, { latitude: number; longitude: number }> = {};
+    const facilitiesById: Record<number, number[]> = {};
+    const accTypeById: Record<number, number> = {};
 
     if (ids.length > 0) {
       try {
         const details = await this.post<any>("/accommodations/details", {
           accommodations: ids,
+          extras: ["facilities"],
         });
         const detailsData: any[] = details.data ?? details.result ?? [];
         for (const d of detailsData) {
@@ -76,18 +77,27 @@ export class BookingApiClient {
           if (d.id != null && typeof lat === "number" && typeof lon === "number") {
             coordsById[d.id] = { latitude: lat, longitude: lon };
           }
+          if (d.id != null && Array.isArray(d.facilities)) {
+            facilitiesById[d.id] = d.facilities
+              .map((f: any) => f.id)
+              .filter((fid: any) => typeof fid === "number");
+          }
+          if (d.id != null && typeof d.accommodation_type === "number") {
+            accTypeById[d.id] = d.accommodation_type;
+          }
         }
       } catch (err) {
-        // Nazwy/wspolrzedne to dodatek - jesli sie nie uda, lista i tak wraca
         console.error(
-          "=== Nie udalo sie pobrac nazw/wspolrzednych hoteli: " +
+          "=== Nie udalo sie pobrac nazw/wspolrzednych/udogodnien hoteli: " +
             (err instanceof Error ? err.message : String(err))
         );
       }
     }
 
     return {
-      hotels: rawHotels.map((h: any) => normalizeHotel(h, namesById, coordsById)),
+      hotels: rawHotels.map((h: any) =>
+        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById)
+      ),
       total_count: raw.total_count ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
     };
@@ -103,7 +113,6 @@ export class BookingApiRequestError extends Error {
   }
 }
 
-// Booking.com zwraca teksty jako obiekt wielojezyczny, np. {"en-gb": "Hotel X"}
 function extractLocalizedText(field: any): string | null {
   if (!field) return null;
   if (typeof field === "string") return field;
@@ -119,21 +128,20 @@ function extractLocalizedText(field: any): string | null {
 function normalizeHotel(
   raw: any,
   namesById: Record<number, string>,
-  coordsById: Record<number, { latitude: number; longitude: number }>
+  coordsById: Record<number, { latitude: number; longitude: number }>,
+  facilitiesById: Record<number, number[]>,
+  accTypeById: Record<number, number>
 ): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
-  // Format 3.1: price.total / price.book to zwykle liczby, currency to tekst (np. "PLN")
   const v31Price =
     typeof raw.price?.total === "number" ? raw.price.total :
     typeof raw.price?.book === "number" ? raw.price.book : undefined;
   const v31Currency = typeof raw.currency === "string" ? raw.currency : undefined;
 
-  // Format 3.2: ceny i waluty zagniezdzone w obiektach
   const v32Price = raw.price?.display?.booker_currency ?? raw.price?.total?.booker_currency;
   const v32Currency = raw.currency?.booker ?? raw.currency?.accommodation;
 
-  // Starsze formaty
   const legacyPrice = raw.min_total_price ?? raw.price_breakdown?.all_inclusive_price;
   const legacyCurrency = raw.price_breakdown?.currency ?? raw.currency_code;
 
@@ -172,6 +180,8 @@ function normalizeHotel(
     url: raw.url ?? raw.deep_link_url,
     property_type: raw.accommodation_type_name,
     free_cancellation: raw.is_free_cancellable ?? raw.has_free_cancellation ?? false,
+    facilities: facilitiesById[hotelId],
+    accommodation_type_id: accTypeById[hotelId],
   };
 }
 
