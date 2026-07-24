@@ -4,7 +4,7 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const HotelSearchInputSchema = z.object({
   city: z.string().min(2).max(100).optional()
-    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. Use ONLY for general "hotels in [city]" requests. OPTIONAL if latitude/longitude are provided instead.'),
+    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. ONLY for general "hotels in [city]" requests. OPTIONAL if latitude/longitude are provided instead.'),
   country: z.string().min(2).max(2).optional()
     .describe('Two-letter lowercase country code (ISO 3166-1), e.g. "pl", "nl". REQUIRED when city is used; infer from the city name.'),
   latitude: z.number().min(-90).max(90).optional()
@@ -23,6 +23,8 @@ export const HotelSearchInputSchema = z.object({
     .describe("Number of rooms (default: 1)"),
   currency: z.string().min(3).max(3).default("PLN")
     .describe('3-letter currency code, e.g. "PLN", "EUR"'),
+  max_price_per_night: z.number().positive().optional()
+    .describe("Maximum price PER NIGHT the user is willing to pay, in the given currency. Set this whenever the user mentions a price limit, e.g. 'up to 300 PLN a night' -> 300, 'max 600 zl per night' -> 600. This is per night, not total stay - if the user gives a total budget for the whole stay instead, divide by the number of nights first."),
   breakfast_only: z.boolean().default(false)
     .describe("Only return hotels that include breakfast"),
   free_cancellation_only: z.boolean().default(false)
@@ -39,7 +41,7 @@ export type HotelSearchInput = z.infer<typeof HotelSearchInputSchema>;
 
 export const SearchCitiesInputSchema = z.object({
   query: z.string().min(2).max(100)
-    .describe('City name or partial name IN ENGLISH, e.g. "Warsaw", "Amsterdam"'),
+    .describe('City name or partial name IN ENGLISH, e.g. "War", "Amsterdam"'),
   country: z.string().min(2).max(2)
     .describe('Two-letter lowercase country code to search in, e.g. "pl", "nl"'),
   limit: z.number().int().min(1).max(20).default(10)

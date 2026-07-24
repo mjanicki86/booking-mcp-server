@@ -4,8 +4,6 @@ import { resolveCityId } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 
-// Domyslne daty przy braku dat od uzytkownika:
-// checkin = najblizszy piatek okolo 90 dni od dzis, checkout = +2 noce (weekend)
 function getDefaultDates(): { checkin: string; checkout: string } {
   const base = new Date();
   base.setDate(base.getDate() + 90);
@@ -20,9 +18,6 @@ function getDefaultDates(): { checkin: string; checkout: string } {
   };
 }
 
-// Ile wynikow pobrac z Booking.com PRZED naszym sortowaniem/filtrowaniem.
-// Przy wyszukiwaniu po wspolrzednych pobieramy szeroko (100), bo Booking.com
-// zwraca hotele w wlasnej, nieprzewidywalnej kolejnosci.
 function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
   if (usingCoordinates) {
     return Math.max(resultsLimit, 100);
@@ -30,9 +25,6 @@ function rowsToFetch(usingCoordinates: boolean, resultsLimit: number): number {
   return resultsLimit;
 }
 
-// Odleglosc w km miedzy dwoma punktami (wzor Haversine).
-// Uzywamy tego zamiast ufac sortowaniu "distance" z Booking.com API,
-// ktore w praktyce nie jest czysta odlegloscia geograficzna.
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -52,7 +44,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results (real calculated distance, not just the API's own ordering).\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes, choose carefully:\n  1. city + country: ONLY for generic 'hotels in [city]' requests with no specific place mentioned. City name must be in ENGLISH.\n  2. latitude + longitude (+ radius_km): MANDATORY whenever the user names a specific place or distance ('near X', 'within Y km of X', 'close to X'), e.g. 'hotels within 2 km of the Palace of Culture' -> latitude 52.2318, longitude 21.0060, radius_km 2. You must supply the REAL coordinates of the named place yourself - never fall back to a plain city search and claim the results are near that place; if you do not know the coordinates, tell the user instead of guessing. Combine with sort_by 'distance' for closest-first results (real calculated distance, not just the API's own ordering).\nDATES are OPTIONAL: if the user did not provide dates, call the tool WITHOUT checkin/checkout instead of asking - sample prices for a weekend about 3 months ahead will be returned.\nPRICE: use max_price_per_night whenever the user gives a price limit ('up to 300 PLN a night'). This is enforced server-side, so results are guaranteed to respect it - always call the tool again with a new max_price_per_night if the user changes their budget, do not just re-describe the previous results.\nOther args: adults, rooms, currency, breakfast_only, free_cancellation_only, min_stars (only if explicitly requested), results_limit (set when user asks for a specific number, up to 100), sort_by (price/review_score/distance/popularity).\nNote: this tool does NOT return hotel amenities (pool, gym, etc.) or addresses - for those, or to check a specific amenity like 'has a pool', call booking_get_hotel_details for each hotel and check its facilities field, not just its text description.\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -127,14 +119,22 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         cityIdForOutput = cityResult.city_id;
       }
 
-      // Sortowanie po stronie API - tylko dla price/review_score (liczbowe, wiarygodne).
-      // "distance" liczymy SAMI po pobraniu wynikow (patrz nizej) - sortowanie
-      // "distance" z samego Booking.com API okazalo sie zawodne w praktyce.
       let sortPart: any = undefined;
       if (params.sort_by === "price") {
         sortPart = { by: "price", direction: "ascending" };
       } else if (params.sort_by === "review_score") {
         sortPart = { by: "review_score", direction: "descending" };
+      }
+
+      // Filtr ceny za noc: probujemy przekazac do API (moze nie byc wspierane w 3.1),
+      // a NIEZALEZNIE OD TEGO filtrujemy tez sami po stronie serwera nizej -
+      // to gwarantuje poprawnosc bez wzgledu na to, czy API respektuje filtr.
+      let filtersPart: any = undefined;
+      const maxTotalPrice = params.max_price_per_night != null
+        ? Math.round(params.max_price_per_night * nights * 100) / 100
+        : undefined;
+      if (maxTotalPrice != null) {
+        filtersPart = { price: { maximum: String(maxTotalPrice) } };
       }
 
       try {
@@ -151,10 +151,20 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           ...locationPart,
         };
         if (sortPart) request.sort = sortPart;
+        if (filtersPart) request.filters = filtersPart;
 
         const result = await client.searchAccommodations(request);
 
         let hotels = result.hotels;
+
+        // Filtr ceny PO STRONIE SERWERA - dziala niezaleznie od tego,
+        // czy Booking.com faktycznie respektuje filters.price w tej wersji API.
+        if (maxTotalPrice != null) {
+          const filtered = hotels.filter(function (h) {
+            return h.price != null && h.price.amount <= maxTotalPrice;
+          });
+          hotels = filtered;
+        }
 
         if (params.breakfast_only) {
           const filtered = hotels.filter(function (h) {
@@ -178,7 +188,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (filtered.length > 0) hotels = filtered;
         }
 
-        // Policz prawdziwa odleglosc dla kazdego hotelu, gdy szukamy po wspolrzednych.
         const distanceById = new Map<number, number>();
         if (usingCoordinates) {
           for (const h of hotels) {
@@ -206,10 +215,13 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         });
 
         if (formatted.length === 0) {
+          const priceHint = maxTotalPrice != null
+            ? " Try a higher price limit (checked up to " + params.max_price_per_night + " " + params.currency + "/night)."
+            : "";
           return {
             content: [{
               type: "text",
-              text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout + ". Try a larger radius, different dates, or without filters.",
+              text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout + " matching your criteria." + priceHint + " Try a larger radius, different dates, or fewer filters.",
             }],
           };
         }
@@ -227,6 +239,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           hotels: formatted,
           currency: currency,
         };
+
+        if (maxTotalPrice != null) {
+          output.price_filter_note = "Results are filtered to a maximum of " + params.max_price_per_night + " " + params.currency + " per night (" + maxTotalPrice + " " + params.currency + " total for " + nights + " night(s)), enforced by the server.";
+        }
 
         if (usingCoordinates) {
           output.radius_km = params.radius_km;
