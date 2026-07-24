@@ -140,8 +140,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         sortPart = { by: params.sort_by, direction: "descending" };
       }
 
-      // Cena: pole "price" na NAJWYZSZYM poziomie zapytania (poprawna skladnia dla v3.1),
-      // nie "filters.price" jak w poprzedniej (bledonej) wersji.
+      // Cena: pole "price" na NAJWYZSZYM poziomie zapytania (poprawna skladnia dla v3.1).
       const maxTotalPrice = params.max_price_per_night != null
         ? Math.round(params.max_price_per_night * nights * 100) / 100
         : undefined;
@@ -167,14 +166,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
       }
 
-      // Udogodnienia: probujemy API-level (best effort - jedna reprezentatywna
-      // wartosc na amenity, zeby uniknac zbyt scislego AND miedzy np. basen kryty/odkryty)
-      let facilitiesApiPart: number[] | undefined = undefined;
-      if (params.required_facilities && params.required_facilities.length > 0) {
-        facilitiesApiPart = params.required_facilities.map(function (a) {
-          return AMENITY_FACILITY_IDS[a][0];
-        });
-      }
+      // UWAGA: nie wysylamy "accommodation_facilities" do API - test pokazal,
+      // ze Booking.com 3.1 zwraca wtedy PUSTA liste (zbyt restrykcyjny/zepsuty filtr).
+      // Filtrowanie po udogodnieniach robimy WYLACZNIE po stronie serwera, nizej.
 
       const hasStrongFilters = !!(
         maxTotalPrice != null || minTotalPrice != null ||
@@ -201,7 +195,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (sortPart) request.sort = sortPart;
         if (pricePart) request.price = pricePart;
         if (ratingPart) request.rating = ratingPart;
-        if (facilitiesApiPart) request.accommodation_facilities = facilitiesApiPart;
 
         const result = await client.searchAccommodations(request);
 
