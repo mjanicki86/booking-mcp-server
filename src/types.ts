@@ -5,8 +5,7 @@ export interface BookerInfo {
 export interface GuestsInfo {
   number_of_adults: number;
   number_of_rooms: number;
-  number_of_children?: number;
-  children_ages?: number[];
+  children?: number[];
 }
 export interface AccommodationSearchRequest {
   booker: BookerInfo;

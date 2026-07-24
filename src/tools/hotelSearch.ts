@@ -140,7 +140,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         sortPart = { by: params.sort_by, direction: "descending" };
       }
 
-      // Cena: pole "price" na NAJWYZSZYM poziomie zapytania (poprawna skladnia dla v3.1).
       const maxTotalPrice = params.max_price_per_night != null
         ? Math.round(params.max_price_per_night * nights * 100) / 100
         : undefined;
@@ -154,10 +153,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (maxTotalPrice != null) pricePart.maximum = maxTotalPrice;
       }
 
-      // Ocena: pole "rating" na najwyzszym poziomie.
-      // Booking.com wymaga INTEGER dla minimum_review_score (400 error na liczby dziesietne,
-      // np. 8.5) - zaokraglamy w gore do API, ale filtrujemy po stronie serwera
-      // dokladna, oryginalna wartoscia (8.5), wiec precyzja nie ginie.
       let ratingPart: any = undefined;
       if (params.min_review_score != null || params.min_stars != null) {
         ratingPart = {};
@@ -169,10 +164,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
       }
 
-      // UWAGA: nie wysylamy "accommodation_facilities" do API - test pokazal,
-      // ze Booking.com 3.1 zwraca wtedy PUSTA liste (zbyt restrykcyjny/zepsuty filtr).
-      // Filtrowanie po udogodnieniach robimy WYLACZNIE po stronie serwera, nizej.
-
       const hasStrongFilters = !!(
         maxTotalPrice != null || minTotalPrice != null ||
         params.min_review_score != null ||
@@ -181,16 +172,21 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       );
 
       try {
+        // Dzieci: Booking.com API 3.1 oczekuje plaskiej tablicy wieku w polu
+        // "guests.children" (bez osobnego "number_of_children" - to pole nie istnieje w API).
+        const guestsPart: any = {
+          number_of_adults: params.adults,
+          number_of_rooms: params.rooms,
+        };
+        if (params.children_ages != null && params.children_ages.length > 0) {
+          guestsPart.children = params.children_ages;
+        }
+
         const request: any = {
           booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
           checkin: checkin,
           checkout: checkout,
-          guests: {
-            number_of_adults: params.adults,
-            number_of_rooms: params.rooms,
-            ...(params.children_count != null ? { number_of_children: params.children_count } : {}),
-            ...(params.children_ages != null ? { children_ages: params.children_ages } : {}),
-          },
+          guests: guestsPart,
           currency: params.currency,
           rows: rowsToFetch(usingCoordinates, params.results_limit, hasStrongFilters),
           ...locationPart,
@@ -202,9 +198,6 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         const result = await client.searchAccommodations(request);
 
         let hotels = result.hotels;
-
-        // --- Filtry po stronie serwera: gwarantuja poprawnosc niezaleznie od tego,
-        // czy Booking.com faktycznie respektuje powyzsze filtry API-level ---
 
         if (maxTotalPrice != null) {
           hotels = hotels.filter(function (h) { return h.price != null && h.price.amount <= maxTotalPrice; });
