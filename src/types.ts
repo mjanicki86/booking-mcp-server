@@ -16,6 +16,12 @@ export interface AccommodationSearchRequest {
   currency?: string;
   rows?: number;
   offset?: number;
+  // Token paginacji z odpowiedzi (metadata.next_page). Gdy obecny,
+  // Booking.com odczytuje z niego oryginalne parametry zapytania -
+  // reszta pól jest wtedy ignorowana przez API, ale zostawiamy je
+  // wymagane w typie, żeby nie trzeba było robić osobnego typu unii
+  // dla wywołań "kolejna strona" (patrz bookingClient.ts).
+  page?: string;
 }
 export interface PriceInfo {
   amount: number;
@@ -49,6 +55,9 @@ export interface SearchResult {
   hotels: Hotel[];
   total_count: number;
   currency?: string;
+  // Token do pobrania kolejnej strony wyników. Brak tego pola oznacza,
+  // że to już ostatnia strona (patrz: docs Booking.com - Pagination guide).
+  next_page?: string;
 }
 export interface BookingApiError {
   status: number;

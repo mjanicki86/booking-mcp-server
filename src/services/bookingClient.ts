@@ -51,6 +51,12 @@ export class BookingApiClient {
     const raw = await this.post<any>("/accommodations/search", request);
     const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
 
+    // Token kolejnej strony - Booking.com zwraca go pod metadata.next_page
+    // (v3.1/v3.2), ale sprawdzamy defensywnie też top-level next_page,
+    // na wypadek innego kształtu odpowiedzi.
+    const nextPage: string | undefined =
+      raw.metadata?.next_page ?? raw.next_page ?? undefined;
+
     const ids = rawHotels
       .map((h: any) => h.hotel_id ?? h.id)
       .filter((id: any) => id != null);
@@ -98,8 +104,9 @@ export class BookingApiClient {
       hotels: rawHotels.map((h: any) =>
         normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById)
       ),
-      total_count: raw.total_count ?? raw.count ?? rawHotels.length,
+      total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
+      next_page: nextPage,
     };
   }
 }

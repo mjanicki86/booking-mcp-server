@@ -14,12 +14,45 @@ const FindHotelInputSchema = z.object({
 
 type FindHotelInput = z.infer<typeof FindHotelInputSchema>;
 
+interface HotelCandidate {
+  hotel_id: number;
+  name: string;
+  booking_url: string | null;
+}
+
+// Usuwa znaki diakrytyczne, żeby "Lodz" pasowało do "Łódź" itp.
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isMatch(hotelName: string, searchName: string): boolean {
+  const h = normalize(hotelName);
+  const s = normalize(searchName);
+  return h.indexOf(s) !== -1 || s.indexOf(h) !== -1;
+}
+
+const MAX_PAGES = 8; // zabezpieczenie przed nieskończoną pętlą / nadmiarem requestów
+
 export function registerFindHotelTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_find_hotel",
     {
       title: "Find Hotel by Name",
-      description: "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used with booking_get_hotel_details. Use this when the user asks about a specific hotel by name but has not provided dates. Does NOT require dates. Args: hotel_name, city (in English), country (2-letter code).",
+      description:
+        "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used " +
+        "with booking_get_hotel_details. Use this when the user asks about a specific hotel by name " +
+        "but has not provided dates. Does NOT require dates. Args: hotel_name, city (in English), " +
+        "country (2-letter code). " +
+        "IMPORTANT - response contract: the response has a 'status' field. " +
+        "If status is 'no_match', tell the user the hotel was not found. " +
+        "If status is 'single_match', proceed directly using the returned hotel_id. " +
+        "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST ask the " +
+        "user to clarify which hotel they mean, listing each candidate's name and booking_url so " +
+        "they can tell them apart. Only after the user picks one, call the next tool using that " +
+        "specific hotel_id.",
       inputSchema: FindHotelInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -51,7 +84,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         const checkin = base.toISOString().split("T")[0];
         const checkout = co.toISOString().split("T")[0];
 
-        const result = await client.searchAccommodations({
+        const baseRequest = {
           booker: { country: "nl", platform: "desktop" },
           checkin: checkin,
           checkout: checkout,
@@ -59,9 +92,53 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           guests: { number_of_adults: 1, number_of_rooms: 1 },
           currency: "PLN",
           rows: 100,
-        });
+        };
 
-        if (result.hotels.length === 0) {
+        const searchName = params.hotel_name;
+        const matched: HotelCandidate[] = [];
+        let allHotelsCount = 0;
+        let nextPageToken: string | undefined = undefined;
+        let pagesFetched = 0;
+
+        // Przechodzimy przez wszystkie strony wyników (next_page), dopóki:
+        // - nie znajdziemy dopasowania, albo
+        // - nie skończą się strony, albo
+        // - nie osiągniemy limitu bezpieczeństwa MAX_PAGES
+        do {
+          // Booking.com odczytuje oryginalne parametry z tokenu 'page', gdy
+          // jest obecny - reszta pól jest wtedy ignorowana przez API, ale
+          // wysyłamy je nadal, żeby spełnić wymagany kształt typu
+          // AccommodationSearchRequest bez potrzeby osobnego typu unii.
+          const requestBody = nextPageToken
+            ? { ...baseRequest, page: nextPageToken }
+            : baseRequest;
+
+          const result = await client.searchAccommodations(requestBody);
+          pagesFetched++;
+
+          allHotelsCount += result.hotels.length;
+
+          for (const h of result.hotels) {
+            if (isMatch(h.name, searchName)) {
+              matched.push({
+                hotel_id: h.hotel_id,
+                name: h.name,
+                booking_url: h.url ?? null,
+              });
+            }
+          }
+
+          nextPageToken = result.next_page; // undefined jeśli to ostatnia strona
+
+          // Jeśli już mamy dopasowania, nie ma sensu ciągnąć kolejnych stron -
+          // rzadko zdarza się, żeby ten sam hotel (po nazwie) występował dalej,
+          // a oszczędza to czas i requesty.
+          if (matched.length > 0) {
+            break;
+          }
+        } while (nextPageToken && pagesFetched < MAX_PAGES);
+
+        if (allHotelsCount === 0) {
           return {
             content: [{
               type: "text",
@@ -70,34 +147,42 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           };
         }
 
-        const searchName = params.hotel_name.toLowerCase();
-        const matched = result.hotels.filter(function (h) {
-          return h.name.toLowerCase().indexOf(searchName) !== -1 ||
-            searchName.indexOf(h.name.toLowerCase()) !== -1;
-        });
+        if (matched.length === 0) {
+          const output = {
+            status: "no_match",
+            message: "No hotel matching \"" + params.hotel_name + "\" found in " + params.city +
+              " (checked " + allHotelsCount + " properties across " + pagesFetched + " page(s)).",
+            data_source: "Booking.com API",
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
+            structuredContent: output,
+          };
+        }
 
-        const hotels = matched.length > 0 ? matched : result.hotels;
+        if (matched.length === 1) {
+          const output = {
+            status: "single_match",
+            hotel: matched[0],
+            data_source: "Booking.com API",
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
+            structuredContent: output,
+          };
+        }
 
+        // Wiecej niz jedno dopasowanie - model MUSI dopytac uzytkownika (patrz opis narzedzia)
         const output = {
-          hotels: hotels.slice(0, 5).map(function (h) {
-            return {
-              hotel_id: h.hotel_id,
-              name: h.name,
-              booking_url: h.url ?? null,
-            };
-          }),
-          total: hotels.length,
-          note: matched.length === 0
-            ? "Exact match not found. Showing available hotels in " + params.city + "."
-            : "Found " + matched.length + " matching hotel(s).",
+          status: "multiple_matches",
+          message: "Found " + matched.length + " hotels matching \"" + params.hotel_name + "\" in " +
+            params.city + ". Ask the user which one they mean before proceeding.",
+          candidates: matched.slice(0, 10),
           data_source: "Booking.com API",
         };
 
         return {
-          content: [{
-            type: "text",
-            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
-          }],
+          content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
           structuredContent: output,
         };
 
