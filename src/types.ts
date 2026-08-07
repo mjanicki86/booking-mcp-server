@@ -7,7 +7,7 @@ export interface GuestsInfo {
   number_of_rooms: number;
   children?: number[];
 }
-export interface AccommodationSearchRequest {
+export interface AccommodationSearchRequestFull {
   booker: BookerInfo;
   checkin: string;
   checkout: string;
@@ -16,13 +16,19 @@ export interface AccommodationSearchRequest {
   currency?: string;
   rows?: number;
   offset?: number;
-  // Token paginacji z odpowiedzi (metadata.next_page). Gdy obecny,
-  // Booking.com odczytuje z niego oryginalne parametry zapytania -
-  // reszta pól jest wtedy ignorowana przez API, ale zostawiamy je
-  // wymagane w typie, żeby nie trzeba było robić osobnego typu unii
-  // dla wywołań "kolejna strona" (patrz bookingClient.ts).
-  page?: string;
 }
+
+// WAŻNE: Booking.com API zwraca błąd 400 "conflicting_parameters", jeśli
+// 'page' jest wysłane razem z jakimkolwiek innym polem. Token 'page'
+// sam w sobie koduje oryginalne parametry zapytania, więc przy pobieraniu
+// kolejnej strony trzeba wysłać WYŁĄCZNIE { page: "..." }, nic więcej.
+export interface AccommodationSearchRequestPage {
+  page: string;
+}
+
+export type AccommodationSearchRequest =
+  | AccommodationSearchRequestFull
+  | AccommodationSearchRequestPage;
 export interface PriceInfo {
   amount: number;
   currency: string;

@@ -105,15 +105,27 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         // - nie skończą się strony, albo
         // - nie osiągniemy limitu bezpieczeństwa MAX_PAGES
         do {
-          // Booking.com odczytuje oryginalne parametry z tokenu 'page', gdy
-          // jest obecny - reszta pól jest wtedy ignorowana przez API, ale
-          // wysyłamy je nadal, żeby spełnić wymagany kształt typu
-          // AccommodationSearchRequest bez potrzeby osobnego typu unii.
+          // WAŻNE: przy paginacji trzeba wysłać WYŁĄCZNIE { page: token },
+          // bez żadnych innych pól - Booking.com odrzuca zapytanie błędem
+          // 400 "conflicting_parameters", jeśli 'page' występuje razem
+          // z czymkolwiek innym. Token sam koduje oryginalne parametry.
           const requestBody = nextPageToken
-            ? { ...baseRequest, page: nextPageToken }
+            ? { page: nextPageToken }
             : baseRequest;
 
-          const result = await client.searchAccommodations(requestBody);
+          let result;
+          try {
+            result = await client.searchAccommodations(requestBody);
+          } catch (pageErr) {
+            // Awaria pojedynczej strony (np. wygasły/niepoprawny token) nie
+            // powinna wysadzać całego zapytania - traktujemy to jak koniec
+            // dostępnych wyników i pracujemy z tym, co już mamy.
+            console.error(
+              "=== Blad przy pobieraniu strony paginacji (pomijam dalsze strony): " +
+                (pageErr instanceof Error ? pageErr.message : String(pageErr))
+            );
+            break;
+          }
           pagesFetched++;
 
           allHotelsCount += result.hotels.length;
