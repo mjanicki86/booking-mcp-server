@@ -35,6 +35,18 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
+// Dla krótkich tokenów (1-2 znaki, np. "o" ze "P&O", "a" z "a&o") substring
+// jest bezużyteczny - niemal każde słowo zawiera pojedynczą literę gdzieś
+// w środku (np. "o" pasuje do "marriott", "hotel"). Dla takich tokenów
+// wymagamy DOKŁADNEJ równości; substring stosujemy tylko dla dłuższych.
+function tokensMatch(hotelToken: string, searchToken: string): boolean {
+  const minLen = Math.min(hotelToken.length, searchToken.length);
+  if (minLen <= 2) {
+    return hotelToken === searchToken;
+  }
+  return hotelToken.indexOf(searchToken) !== -1 || searchToken.indexOf(hotelToken) !== -1;
+}
+
 // Dopasowanie tokenowe zamiast prostego substring: każde słowo z zapytania
 // musi wystąpić gdzieś w nazwie hotelu, niezależnie od kolejności i słów
 // dodatkowych. Dzięki temu "Focus Premium Warszawa" znajdzie hotel
@@ -45,7 +57,7 @@ function isMatch(hotelName: string, searchName: string): boolean {
   if (searchTokens.length === 0 || hotelTokens.length === 0) return false;
 
   return searchTokens.every((st) =>
-    hotelTokens.some((ht) => ht.indexOf(st) !== -1 || st.indexOf(ht) !== -1)
+    hotelTokens.some((ht) => tokensMatch(ht, st))
   );
 }
 
