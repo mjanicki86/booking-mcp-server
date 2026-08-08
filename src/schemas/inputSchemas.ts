@@ -42,7 +42,7 @@ export const HotelSearchInputSchema = z.object({
   required_facilities: z.array(z.enum([
     "pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed"
   ])).optional()
-    .describe("List of amenities the hotel MUST have, enforced by the server. Set this whenever the user asks for hotels with a specific amenity, e.g. 'hotels with a pool' -> [\"pool\"], 'with pool and gym' -> [\"pool\", \"gym\"]. Do NOT try to verify amenities by calling booking_get_hotel_details on each result instead - use this parameter so the search itself is filtered correctly."),
+    .describe("List of amenities the hotel MUST have, enforced by the server. Set this whenever the user asks for hotels with a specific amenity. MUST use EXACTLY these string values (nothing else is valid): \"pool\", \"gym\", \"parking\", \"wifi\", \"air_conditioning\", \"spa\", \"restaurant\", \"sauna\", \"pets_allowed\". Examples: 'hotels with a pool' -> [\"pool\"], 'with pool and gym' -> [\"pool\", \"gym\"], 'that accept pets' / 'pet-friendly' / 'dog-friendly' -> [\"pets_allowed\"] (NOT \"pets\" - that value does not exist and will be rejected). Do NOT try to verify amenities by calling booking_get_hotel_details on each result instead - use this parameter so the search itself is filtered correctly."),
   exclude_hostels: z.boolean().default(false)
     .describe("Exclude hostels/dormitory-style accommodations from results. Set to true when the user wants a 'proper hotel' or explicitly says no hostels, or implicitly seems to want higher-quality lodging despite a low budget."),
   results_limit: z.number().int().min(1).max(100).default(10)

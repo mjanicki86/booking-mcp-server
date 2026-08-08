@@ -15,6 +15,11 @@ const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   spa: [54],
   restaurant: [3],
   sauna: [10],
+  // Zgodne ze schema (inputSchemas.ts) - enum required_facilities dopuszcza
+  // dokladnie "pets_allowed". Model czasem probowal wyslac samo "pets" -
+  // to zostaje odrzucone juz na etapie walidacji Zod, zanim dotrze tutaj.
+  // Poprawka opisu w schema (patrz inputSchemas.ts) ma to ograniczyc.
+  // ID=4 nadal wymaga weryfikacji - patrz notatka w rozmowie z 2026-08.
   pets_allowed: [4],
 };
 
@@ -227,13 +232,28 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
 
         if (params.required_facilities && params.required_facilities.length > 0) {
+          const beforeCount = hotels.length;
           hotels = hotels.filter(function (h) {
             if (!h.facilities) return false;
             return params.required_facilities!.every(function (amenity) {
               const ids = AMENITY_FACILITY_IDS[amenity];
+              if (!ids) {
+                // Nieznana wartosc amenity - brak mapowania na ID Booking.com.
+                // Zamiast crashowac cale zapytanie (jak dotychczas przez
+                // "ids.some is not a function"), traktujemy to jako
+                // niespelnione kryterium i głośno logujemy do diagnozy.
+                console.error("=== OSTRZEZENIE booking_search_hotels: nieznana wartosc " +
+                  "required_facilities=\"" + amenity + "\" - brak mapowania w AMENITY_FACILITY_IDS. " +
+                  "Sprawdz zgodnosc ze schema (inputSchemas.ts). Dostepne klucze: " +
+                  Object.keys(AMENITY_FACILITY_IDS).join(", "));
+                return false;
+              }
               return ids.some(function (id) { return h.facilities!.includes(id); });
             });
           });
+          console.error("=== DIAG required_facilities=" + params.required_facilities.join(",") +
+            " zredukowal wyniki z " + beforeCount + " do " + hotels.length +
+            ". Sprawdzane ID: " + JSON.stringify(params.required_facilities.map(a => ({ [a]: AMENITY_FACILITY_IDS[a] }))));
         }
 
         if (params.breakfast_only) {
@@ -243,12 +263,30 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
                 (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
             });
           });
-          if (filtered.length > 0) hotels = filtered;
+          if (filtered.length > 0) {
+            const dropped = hotels.filter(function (h) { return filtered.indexOf(h) === -1; });
+            if (dropped.length > 0) {
+              console.error("=== DIAG breakfast_only odrzucil " + dropped.length + " hoteli: " +
+                JSON.stringify(dropped.map(function (h) {
+                  return { hotel_id: h.hotel_id, name: h.name, meal_plans: h.meal_plans };
+                })));
+            }
+            hotels = filtered;
+          }
         }
 
         if (params.free_cancellation_only) {
           const filtered = hotels.filter(function (h) { return h.free_cancellation === true; });
-          if (filtered.length > 0) hotels = filtered;
+          if (filtered.length > 0) {
+            const dropped = hotels.filter(function (h) { return filtered.indexOf(h) === -1; });
+            if (dropped.length > 0) {
+              console.error("=== DIAG free_cancellation_only odrzucil " + dropped.length + " hoteli: " +
+                JSON.stringify(dropped.map(function (h) {
+                  return { hotel_id: h.hotel_id, name: h.name, free_cancellation: h.free_cancellation };
+                })));
+            }
+            hotels = filtered;
+          }
         }
 
         const distanceById = new Map<number, number>();
