@@ -28,10 +28,25 @@ function normalize(text: string): string {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function tokenize(text: string): string[] {
+  return normalize(text)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// Dopasowanie tokenowe zamiast prostego substring: każde słowo z zapytania
+// musi wystąpić gdzieś w nazwie hotelu, niezależnie od kolejności i słów
+// dodatkowych. Dzięki temu "Focus Premium Warszawa" znajdzie hotel
+// "Focus Hotel Premium Warszawa" (słowo "Hotel" pomiędzy nie przeszkadza).
 function isMatch(hotelName: string, searchName: string): boolean {
-  const h = normalize(hotelName);
-  const s = normalize(searchName);
-  return h.indexOf(s) !== -1 || s.indexOf(h) !== -1;
+  const hotelTokens = tokenize(hotelName);
+  const searchTokens = tokenize(searchName);
+  if (searchTokens.length === 0 || hotelTokens.length === 0) return false;
+
+  return searchTokens.every((st) =>
+    hotelTokens.some((ht) => ht.indexOf(st) !== -1 || st.indexOf(ht) !== -1)
+  );
 }
 
 const MAX_PAGES = 8; // zabezpieczenie przed nieskończoną pętlą / nadmiarem requestów
