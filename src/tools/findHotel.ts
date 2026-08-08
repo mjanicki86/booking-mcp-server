@@ -35,6 +35,21 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
+// Generyczne słowa typu "hotel" czy "hotels" pojawiają się w zapytaniach
+// użytkownika ("Warsaw Marriott Hotel"), ale rzadko w oficjalnych nazwach
+// na Booking.com (np. "Courtyard by Marriott Warsaw Airport" nie zawiera
+// nigdzie słowa "hotel"). Wymaganie ich jako obowiązkowego tokenu
+// niepotrzebnie blokuje trafne dopasowania - usuwamy je z zapytania,
+// zachowując fallback na wypadek gdyby usera zapytanie składało się
+// WYŁĄCZNIE z takiego słowa (żeby nie dopasować przypadkiem wszystkiego).
+const GENERIC_QUERY_STOPWORDS = new Set(["hotel", "hotels"]);
+
+function tokenizeQuery(text: string): string[] {
+  const tokens = tokenize(text);
+  const filtered = tokens.filter((t) => !GENERIC_QUERY_STOPWORDS.has(t));
+  return filtered.length > 0 ? filtered : tokens;
+}
+
 // Dla krótkich tokenów (1-2 znaki, np. "o" ze "P&O", "a" z "a&o") substring
 // jest bezużyteczny - niemal każde słowo zawiera pojedynczą literę gdzieś
 // w środku (np. "o" pasuje do "marriott", "hotel"). Dla takich tokenów
@@ -53,10 +68,25 @@ function tokensMatch(hotelToken: string, searchToken: string): boolean {
 // "Focus Hotel Premium Warszawa" (słowo "Hotel" pomiędzy nie przeszkadza).
 function isMatch(hotelName: string, searchName: string): boolean {
   const hotelTokens = tokenize(hotelName);
-  const searchTokens = tokenize(searchName);
+  const searchTokens = tokenizeQuery(searchName);
   if (searchTokens.length === 0 || hotelTokens.length === 0) return false;
 
   return searchTokens.every((st) =>
+    hotelTokens.some((ht) => tokensMatch(ht, st))
+  );
+}
+
+// Dopasowanie CZĘŚCIOWE: przynajmniej jeden (nie wszystkie) token z
+// zapytania pasuje do nazwy hotelu. Używane jako fallback, gdy pełne
+// dopasowanie nic nie znajdzie - pomaga przy literówkach, zmianach nazw
+// marek (np. hotel przestał być "Marriott") czy niepełnych frazach,
+// zamiast zwracać suche "nie znaleziono".
+function partialMatch(hotelName: string, searchName: string): boolean {
+  const hotelTokens = tokenize(hotelName);
+  const searchTokens = tokenizeQuery(searchName);
+  if (searchTokens.length === 0 || hotelTokens.length === 0) return false;
+
+  return searchTokens.some((st) =>
     hotelTokens.some((ht) => tokensMatch(ht, st))
   );
 }
@@ -79,7 +109,12 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST ask the " +
         "user to clarify which hotel they mean, listing each candidate's name and booking_url so " +
         "they can tell them apart. Only after the user picks one, call the next tool using that " +
-        "specific hotel_id.",
+        "specific hotel_id. " +
+        "If status is 'partial_match', these are NOT confirmed matches (e.g. only part of the name " +
+        "matched) - clearly tell the user this is not a guaranteed match (the property might have " +
+        "been renamed, or these might be unrelated hotels that just share a word), list the " +
+        "candidates, and ask the user to confirm before proceeding - never silently treat a " +
+        "partial_match candidate as if it were the hotel the user asked for.",
       inputSchema: FindHotelInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -123,6 +158,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
 
         const searchName = params.hotel_name;
         const matched: HotelCandidate[] = [];
+        const allChecked: HotelCandidate[] = [];
         let allHotelsCount = 0;
         let nextPageToken: string | undefined = undefined;
         let pagesFetched = 0;
@@ -158,12 +194,14 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           allHotelsCount += result.hotels.length;
 
           for (const h of result.hotels) {
+            const candidate: HotelCandidate = {
+              hotel_id: h.hotel_id,
+              name: h.name,
+              booking_url: h.url ?? null,
+            };
+            allChecked.push(candidate);
             if (isMatch(h.name, searchName)) {
-              matched.push({
-                hotel_id: h.hotel_id,
-                name: h.name,
-                booking_url: h.url ?? null,
-              });
+              matched.push(candidate);
             }
           }
 
@@ -187,8 +225,37 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         }
 
         if (matched.length === 0) {
-          console.error("=== DIAG booking_find_hotel: brak dopasowania dla \"" + searchName +
+          console.error("=== DIAG booking_find_hotel: brak pelnego dopasowania dla \"" + searchName +
             "\" wsrod " + allHotelsCount + " sprawdzonych hoteli (" + pagesFetched + " stron).");
+
+          // Zanim poddamy sie calkowicie, sprawdzamy dopasowanie CZESCIOWE
+          // (choc jeden token pasuje) wsrod wszystkich sprawdzonych hoteli -
+          // pomaga np. gdy hotel zmienil nazwe marki (jak Warsaw Marriott ->
+          // Warsaw Presidential) albo user popelnil literowke w jednym slowie.
+          const partial = allChecked.filter((h) => partialMatch(h.name, searchName));
+
+          if (partial.length > 0) {
+            console.error("=== DIAG booking_find_hotel: " + partial.length +
+              " czesciowych dopasowan dla \"" + searchName + "\": " +
+              JSON.stringify(partial.slice(0, 10).map((h) => h.name)));
+
+            const output = {
+              status: "partial_match",
+              message: "No hotel exactly matches \"" + params.hotel_name + "\" in " + params.city +
+                ". However, found " + partial.length + " object(s) that partially match (e.g. share " +
+                "a brand name or word) - this is NOT a confirmed exact match. Tell the user clearly " +
+                "these are not guaranteed to be the hotel they meant (the name might have changed, " +
+                "or these might be unrelated properties), list the candidates by name, and ask the " +
+                "user to confirm or clarify before proceeding.",
+              candidates: partial.slice(0, 10),
+              data_source: "Booking.com API",
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
+              structuredContent: output,
+            };
+          }
+
           const output = {
             status: "no_match",
             message: "No hotel matching \"" + params.hotel_name + "\" found in " + params.city +
