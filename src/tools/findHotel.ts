@@ -175,6 +175,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         }
 
         if (matched.length === 0) {
+          console.error("=== DIAG booking_find_hotel: brak dopasowania dla \"" + searchName +
+            "\" wsrod " + allHotelsCount + " sprawdzonych hoteli (" + pagesFetched + " stron).");
           const output = {
             status: "no_match",
             message: "No hotel matching \"" + params.hotel_name + "\" found in " + params.city +
@@ -188,6 +190,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         }
 
         if (matched.length === 1) {
+          console.error("=== DIAG booking_find_hotel: jedno dopasowanie dla \"" + searchName +
+            "\": " + JSON.stringify(matched[0]));
           const output = {
             status: "single_match",
             hotel: matched[0],
@@ -200,6 +204,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         }
 
         // Wiecej niz jedno dopasowanie - model MUSI dopytac uzytkownika (patrz opis narzedzia)
+        console.error("=== DIAG booking_find_hotel: " + matched.length + " dopasowan dla \"" +
+          searchName + "\": " + JSON.stringify(matched.map(m => m.name)));
         const output = {
           status: "multiple_matches",
           message: "Found " + matched.length + " hotels matching \"" + params.hotel_name + "\" in " +
