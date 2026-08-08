@@ -4,11 +4,17 @@ export interface CitySearchResult {
   city_id: number;
   name: string;
   country: string;
+  // Wszystkie warianty językowe nazwy miasta znalezione w odpowiedzi API
+  // (np. "Warsaw" i "Warszawa" naraz) - przydatne np. do wykluczania nazwy
+  // miasta jako kryterium dopasowania nazwy hotelu, niezależnie od tego,
+  // w jakim języku user ją wpisał.
+  name_variants: string[];
 }
 
 interface CachedCity {
   city_id: number;
   name: string;
+  name_variants: string[];
 }
 
 // Pamiec podreczna: klucz "kraj:znormalizowana-nazwa" -> miasto.
@@ -35,6 +41,18 @@ function extractName(field: any): string | null {
   return null;
 }
 
+// Wyciaga WSZYSTKIE warianty jezykowe nazwy (np. en-gb i pl naraz), nie
+// tylko jeden preferowany - potrzebne do wykluczania nazwy miasta jako
+// kryterium dopasowania niezaleznie od jezyka, w ktorym user ja wpisal.
+function extractAllNameVariants(field: any): string[] {
+  if (!field) return [];
+  if (typeof field === "string") return [field];
+  if (typeof field === "object") {
+    return Object.values(field).filter((v): v is string => typeof v === "string");
+  }
+  return [];
+}
+
 // Szuka City ID po nazwie miasta, pytajac API Booking.com (z kartkowaniem stron).
 // Wszystkie miasta napotkane po drodze laduja w cache, wiec kolejne pytania
 // o miasta z tego samego kraju sa coraz szybsze.
@@ -49,7 +67,12 @@ export async function resolveCityId(
 
   const cached = cityCache.get(cacheKey);
   if (cached) {
-    return { city_id: cached.city_id, name: cached.name, country: normCountry };
+    return {
+      city_id: cached.city_id,
+      name: cached.name,
+      country: normCountry,
+      name_variants: cached.name_variants,
+    };
   }
 
   let body: any = { country: normCountry };
@@ -63,19 +86,25 @@ export async function resolveCityId(
     for (const entry of data) {
       const name = extractName(entry.name);
       if (!name || entry.id == null) continue;
+      const variants = extractAllNameVariants(entry.name);
 
       const key = normCountry + ":" + normalizeCityName(name);
       if (!cityCache.has(key)) {
-        cityCache.set(key, { city_id: entry.id, name: name });
+        cityCache.set(key, { city_id: entry.id, name: name, name_variants: variants });
       }
 
       if (!found && normalizeCityName(name) === normName) {
-        found = { city_id: entry.id, name: name };
+        found = { city_id: entry.id, name: name, name_variants: variants };
       }
     }
 
     if (found) {
-      return { city_id: found.city_id, name: found.name, country: normCountry };
+      return {
+        city_id: found.city_id,
+        name: found.name,
+        country: normCountry,
+        name_variants: found.name_variants,
+      };
     }
 
     if (!resp.next_page) break;
@@ -91,10 +120,10 @@ export async function searchCities(
   query: string,
   country: string,
   limit: number
-): Promise<CitySearchResult[]> {
+): Promise<Omit<CitySearchResult, "name_variants">[]> {
   const normCountry = country.toLowerCase().trim();
   const normQuery = normalizeCityName(query);
-  const results: CitySearchResult[] = [];
+  const results: Omit<CitySearchResult, "name_variants">[] = [];
   const seen = new Set<number>();
 
   let body: any = { country: normCountry };
@@ -109,7 +138,7 @@ export async function searchCities(
 
       const key = normCountry + ":" + normalizeCityName(name);
       if (!cityCache.has(key)) {
-        cityCache.set(key, { city_id: entry.id, name: name });
+        cityCache.set(key, { city_id: entry.id, name: name, name_variants: extractAllNameVariants(entry.name) });
       }
 
       if (normalizeCityName(name).indexOf(normQuery) !== -1 && !seen.has(entry.id)) {

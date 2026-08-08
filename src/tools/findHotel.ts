@@ -76,17 +76,20 @@ function isMatch(hotelName: string, searchName: string): boolean {
   );
 }
 
-// Dopasowanie CZĘŚCIOWE: przynajmniej jeden (nie wszystkie) token z
-// zapytania pasuje do nazwy hotelu. Używane jako fallback, gdy pełne
-// dopasowanie nic nie znajdzie - pomaga przy literówkach, zmianach nazw
-// marek (np. hotel przestał być "Marriott") czy niepełnych frazach,
-// zamiast zwracać suche "nie znaleziono".
-function partialMatch(hotelName: string, searchName: string): boolean {
+// Dopasowanie CZĘŚCIOWE: przynajmniej jeden (nie wszystkie) ZNACZĄCY token
+// z zapytania pasuje do nazwy hotelu. Używane jako fallback, gdy pełne
+// dopasowanie nic nie znajdzie. Tokeny odpowiadające nazwie miasta są
+// pomijane jako kryterium - skoro wszystkie sprawdzane hotele i tak są
+// już w tym mieście, samo "Warszawa" w nazwie hotelu to prawie żaden
+// sygnał i tylko zaśmieca listę propozycji niepowiązanymi obiektami.
+function partialMatch(hotelName: string, searchName: string, cityExclusions: Set<string>): boolean {
   const hotelTokens = tokenize(hotelName);
-  const searchTokens = tokenizeQuery(searchName);
-  if (searchTokens.length === 0 || hotelTokens.length === 0) return false;
+  const rawSearchTokens = tokenizeQuery(searchName);
+  const searchTokens = rawSearchTokens.filter((t) => !cityExclusions.has(t));
+  const effectiveTokens = searchTokens.length > 0 ? searchTokens : rawSearchTokens;
+  if (effectiveTokens.length === 0 || hotelTokens.length === 0) return false;
 
-  return searchTokens.some((st) =>
+  return effectiveTokens.some((st) =>
     hotelTokens.some((ht) => tokensMatch(ht, st))
   );
 }
@@ -135,6 +138,16 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           isError: true,
         };
       }
+
+      // Nazwa miasta (we wszystkich wariantach jezykowych zwroconych przez
+      // Booking.com, np. "Warsaw" i "Warszawa" naraz) jest zbyt slabym
+      // sygnalem dla dopasowania czesciowego - wszystkie sprawdzane hotele
+      // juz sa w tym miescie, wiec wykluczamy jej tokeny z kryteriow
+      // partialMatch, niezaleznie w jakim jezyku user ja wpisal.
+      const cityExclusions = new Set<string>([
+        ...tokenize(params.city),
+        ...cityResult.name_variants.flatMap((v) => tokenize(v)),
+      ]);
 
       try {
         // Szukamy w terminie ok. 90 dni do przodu - szeroka dostepnosc hoteli
@@ -232,7 +245,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           // (choc jeden token pasuje) wsrod wszystkich sprawdzonych hoteli -
           // pomaga np. gdy hotel zmienil nazwe marki (jak Warsaw Marriott ->
           // Warsaw Presidential) albo user popelnil literowke w jednym slowie.
-          const partial = allChecked.filter((h) => partialMatch(h.name, searchName));
+          const partial = allChecked.filter((h) => partialMatch(h.name, searchName, cityExclusions));
 
           if (partial.length > 0) {
             console.error("=== DIAG booking_find_hotel: " + partial.length +
