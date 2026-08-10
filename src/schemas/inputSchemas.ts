@@ -32,7 +32,14 @@ export const HotelSearchInputSchema = z.object({
   min_price_per_night: z.number().positive().optional()
     .describe("Minimum price PER NIGHT, in the given currency. Set only if the user gives a lower bound, e.g. 'at least 200 PLN a night'."),
   breakfast_only: z.boolean().default(false)
-    .describe("Only return hotels that include breakfast"),
+    .describe("Only return hotels where breakfast is INCLUDED in the room price at no extra cost. " +
+      "IMPORTANT: set this ONLY when the user explicitly says breakfast must be included/free/bundled " +
+      "in the price (e.g. 'breakfast included', 'ze śniadaniem w cenie', 'free breakfast'). " +
+      "Do NOT set this for a generic mention of breakfast without that qualifier (e.g. plain " +
+      "'with breakfast' / 'ze śniadaniem') - most hotels offer breakfast as a PAID add-on, which " +
+      "this filter would incorrectly exclude. If unsure whether the user means included-only or " +
+      "breakfast-available-for-a-fee-is-fine, leave this false and mention in your answer which " +
+      "hotels include breakfast vs charge extra for it, rather than filtering them out."),
   free_cancellation_only: z.boolean().default(false)
     .describe("Only return hotels with free cancellation"),
   min_stars: z.number().int().min(1).max(5).optional()
