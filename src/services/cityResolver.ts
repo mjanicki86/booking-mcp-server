@@ -99,6 +99,8 @@ export async function resolveCityId(
     }
 
     if (found) {
+      console.error("=== Miasto rozwiazane: \"" + cityName + "\" -> " + found.name +
+        " (id=" + found.city_id + ") po " + (page + 1) + " stronach");
       return {
         city_id: found.city_id,
         name: found.name,
@@ -111,6 +113,7 @@ export async function resolveCityId(
     body = { page: resp.next_page };
   }
 
+  console.error("=== Miasto NIE rozwiazane: \"" + cityName + "\" w kraju \"" + country + "\"");
   return null;
 }
 

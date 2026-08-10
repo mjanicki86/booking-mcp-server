@@ -18,8 +18,16 @@ export class BookingApiClient {
 
   async post<T>(endpoint: string, body: unknown): Promise<T> {
     const url = config.bookingApiBaseUrl + endpoint;
-    console.error("=== Calling Booking.com: " + url);
-    console.error("=== Request body: " + JSON.stringify(body));
+    // Resolwowanie miasta (/common/locations/cities) potrafi wygenerowac
+    // dziesiatki stron zanim znajdzie dopasowanie - to zalewa strumien logow
+    // i przez to gubia sie istotne linie DIAG/CHECKPOINT wypisywane pozniej
+    // w tym samym zadaniu. Dla tego endpointu logujemy tylko skrotowo.
+    const isCityLookup = endpoint.indexOf("/common/locations/cities") !== -1;
+
+    if (!isCityLookup) {
+      console.error("=== Calling Booking.com: " + url);
+      console.error("=== Request body: " + JSON.stringify(body));
+    }
 
     const response = await fetch(url, {
       method: "POST",
@@ -33,8 +41,11 @@ export class BookingApiClient {
     });
 
     const responseText = await response.text();
-    console.error("=== Booking.com response status: " + response.status);
-    console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
+
+    if (!isCityLookup) {
+      console.error("=== Booking.com response status: " + response.status);
+      console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
+    }
 
     if (!response.ok) {
       throw new BookingApiRequestError({
