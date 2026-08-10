@@ -106,6 +106,13 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "with booking_get_hotel_details. Use this when the user asks about a specific hotel by name " +
         "but has not provided dates. Does NOT require dates. Args: hotel_name, city (in English), " +
         "country (2-letter code). " +
+        "CITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, " +
+        "could be a foreign city, could be a typo), do NOT silently substitute the closest city name " +
+        "you happen to know - call booking_search_cities FIRST to see real matches. If the name could " +
+        "plausibly belong to more than one country (e.g. treating 'Lublana' as a typo for 'Lublin' in " +
+        "Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which " +
+        "one they mean rather than picking one yourself - guessing wrong sends completely the wrong " +
+        "results with no warning. " +
         "IMPORTANT - response contract: the response has a 'status' field. " +
         "If status is 'no_match', tell the user the hotel was not found. " +
         "If status is 'single_match', proceed directly using the returned hotel_id. " +
