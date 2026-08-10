@@ -173,7 +173,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         maxTotalPrice != null || minTotalPrice != null ||
         params.min_review_score != null ||
         (params.required_facilities && params.required_facilities.length > 0) ||
-        params.exclude_hostels
+        params.exclude_hostels ||
+        // breakfast_only i free_cancellation_only tez potrzebuja wiekszej puli -
+        // inaczej odfiltrowujemy z zaledwie kilku hoteli (domyslny results_limit
+        // to tylko 10), co gubi poprawne wyniki spoza tej maleńkiej proby.
+        params.breakfast_only ||
+        params.free_cancellation_only
       );
 
       try {
