@@ -17,6 +17,26 @@ function normalizeName(name: string): string {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function tokenize(name: string): string[] {
+  return normalizeName(name)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// Dla krotkich tokenow (1-2 znaki, np. "of", "st", "i", "w", "z") prosty
+// substring jest bezuzyteczny - niemal kazde slowo zawiera gdzies takie
+// litery. Ten sam blad zlapalismy wczesniej przy dopasowywaniu nazw hoteli
+// (np. "o" z "a&o" falszywie pasowalo do "marriott"). Dla krotkich tokenow
+// wymagamy DOKLADNEJ rownosci; substring tylko dla dluzszych.
+function tokensMatch(a: string, b: string): boolean {
+  const minLen = Math.min(a.length, b.length);
+  if (minLen <= 2) {
+    return a === b;
+  }
+  return a.indexOf(b) !== -1 || b.indexOf(a) !== -1;
+}
+
 function extractName(field: any): string | null {
   if (!field) return null;
   if (typeof field === "string") return field;
@@ -42,16 +62,15 @@ function extractAllNameVariants(field: any): string[] {
 // Szuka punktow orientacyjnych (zabytki, dworce, lotniska, atrakcje) w obrebie
 // KONKRETNEGO miasta (Booking.com wymaga podania city_id - nie ma globalnego
 // wyszukiwania punktow orientacyjnych po calym swiecie na raz).
-// Dopasowanie: tokenowe substring PO WSZYSTKICH wariantach jezykowych nazwy,
-// zeby polska nazwa ("Fontanna Neptuna") trafila w angielski wpis w bazie
-// ("Neptune Fountain"), a nie tylko dokladnie ten sam jezyk.
+// Dopasowanie: tokenowe, bezpieczne dla krotkich slow, PO WSZYSTKICH
+// wariantach jezykowych nazwy naraz.
 export async function searchLandmarks(
   client: BookingApiClient,
   cityId: number,
   query: string,
   limit: number
 ): Promise<LandmarkSearchResult[]> {
-  const queryTokens = normalizeName(query).split(/\s+/).filter(Boolean);
+  const queryTokens = tokenize(query);
   const results: LandmarkSearchResult[] = [];
   const seen = new Set<number>();
 
@@ -72,9 +91,11 @@ export async function searchLandmarks(
       const lon = entry.coordinates?.longitude;
       if (!displayName || entry.id == null || typeof lat !== "number" || typeof lon !== "number") continue;
 
-      const nameTokens = allVariants.flatMap((v) => normalizeName(v).split(/\s+/).filter(Boolean));
+      const nameTokens = allVariants.flatMap((v) => tokenize(v));
+      if (queryTokens.length === 0 || nameTokens.length === 0) continue;
+
       const matches = queryTokens.every((qt) =>
-        nameTokens.some((nt) => nt.indexOf(qt) !== -1 || qt.indexOf(nt) !== -1)
+        nameTokens.some((nt) => tokensMatch(nt, qt))
       );
 
       if (matches && !seen.has(entry.id)) {
@@ -89,6 +110,9 @@ export async function searchLandmarks(
     // /accommodations/search) - token juz zawiera oryginalne parametry.
     body = { page: resp.next_page };
   }
+
+  console.error("=== DIAG searchLandmarks: query=\"" + query + "\" -> " + results.length +
+    " dopasowan: " + JSON.stringify(results.map((r) => r.name)));
 
   return results;
 }
