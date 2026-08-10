@@ -207,6 +207,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         const result = await client.searchAccommodations(request);
 
+        console.error("=== CHECKPOINT: dane pobrane, " + result.hotels.length +
+          " hoteli, rozpoczynam filtrowanie...");
+
         let hotels = result.hotels;
 
         if (maxTotalPrice != null) {
@@ -262,34 +265,36 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
 
         if (params.breakfast_only) {
+          const beforeBreakfast = hotels.length;
           const filtered = hotels.filter(function (h) {
             return h.meal_plans && h.meal_plans.some(function (mp) {
               return mp.code === "breakfast_included" ||
                 (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
             });
           });
+          // Log ZAWSZE, niezaleznie od wyniku - poprzednio byl w srodku
+          // "if (filtered.length > 0)", wiec akurat przy zerowej liczbie
+          // dopasowan (najbardziej interesujacy przypadek) nigdy sie nie
+          // wykonywal.
+          console.error("=== DIAG breakfast_only: " + beforeBreakfast + " -> " + filtered.length +
+            " hoteli. Przyklad meal_plans z odrzuconych: " +
+            JSON.stringify(hotels.filter(function (h) { return filtered.indexOf(h) === -1; })
+              .slice(0, 5)
+              .map(function (h) { return { hotel_id: h.hotel_id, name: h.name, meal_plans: h.meal_plans }; })));
           if (filtered.length > 0) {
-            const dropped = hotels.filter(function (h) { return filtered.indexOf(h) === -1; });
-            if (dropped.length > 0) {
-              console.error("=== DIAG breakfast_only odrzucil " + dropped.length + " hoteli: " +
-                JSON.stringify(dropped.map(function (h) {
-                  return { hotel_id: h.hotel_id, name: h.name, meal_plans: h.meal_plans };
-                })));
-            }
             hotels = filtered;
           }
         }
 
         if (params.free_cancellation_only) {
+          const beforeCancellation = hotels.length;
           const filtered = hotels.filter(function (h) { return h.free_cancellation === true; });
+          console.error("=== DIAG free_cancellation_only: " + beforeCancellation + " -> " + filtered.length +
+            " hoteli. Przyklad free_cancellation z odrzuconych: " +
+            JSON.stringify(hotels.filter(function (h) { return filtered.indexOf(h) === -1; })
+              .slice(0, 5)
+              .map(function (h) { return { hotel_id: h.hotel_id, name: h.name, free_cancellation: h.free_cancellation }; })));
           if (filtered.length > 0) {
-            const dropped = hotels.filter(function (h) { return filtered.indexOf(h) === -1; });
-            if (dropped.length > 0) {
-              console.error("=== DIAG free_cancellation_only odrzucil " + dropped.length + " hoteli: " +
-                JSON.stringify(dropped.map(function (h) {
-                  return { hotel_id: h.hotel_id, name: h.name, free_cancellation: h.free_cancellation };
-                })));
-            }
             hotels = filtered;
           }
         }
@@ -313,6 +318,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
 
         const currency = result.currency ?? params.currency;
+        console.error("=== CHECKPOINT: filtrowanie zakonczone, " + hotels.length +
+          " hoteli pozostalo, formatuje odpowiedz...");
         const formatted = hotels.slice(0, params.results_limit).map(function (h) {
           const fh = formatHotel(h, currency);
           const d = distanceById.get(h.hotel_id);
