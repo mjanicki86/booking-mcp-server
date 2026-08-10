@@ -8,6 +8,7 @@ import { registerHotelSearchTool } from "./tools/hotelSearch.js";
 import { registerSearchCitiesTool } from "./tools/listCities.js";
 import { registerHotelDetailsTool } from "./tools/hotelDetails.js";
 import { registerFindHotelTool } from "./tools/findHotel.js";
+import { registerFindLandmarkTool } from "./tools/findLandmark.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
@@ -55,6 +56,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
       registerSearchCitiesTool(server, apiClient);
       registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
       registerFindHotelTool(server, apiClient);
+      registerFindLandmarkTool(server, apiClient);
 
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),

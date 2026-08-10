@@ -70,3 +70,14 @@ export const SearchCitiesInputSchema = z.object({
 });
 
 export type SearchCitiesInput = z.infer<typeof SearchCitiesInputSchema>;
+
+export const FindLandmarkInputSchema = z.object({
+  landmark_name: z.string().min(2).max(150)
+    .describe('Name of the landmark, station, attraction or point of interest, e.g. "Fontanna Neptuna", "Central Station", "Eiffel Tower".'),
+  city: z.string().min(2).max(100)
+    .describe('City the landmark is located in, IN ENGLISH, e.g. "Warsaw", "Amsterdam".'),
+  country: z.string().min(2).max(2)
+    .describe('Two-letter lowercase country code, e.g. "pl", "nl".'),
+});
+
+export type FindLandmarkInput = z.infer<typeof FindLandmarkInputSchema>;
