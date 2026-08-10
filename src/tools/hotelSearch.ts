@@ -199,6 +199,11 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           guests: guestsPart,
           currency: params.currency,
           rows: rowsToFetch(usingCoordinates, params.results_limit, hasStrongFilters),
+          // "products" MUSI byc jawnie zazadane przez extras - bez tego
+          // Booking.com nie zwraca w ogole tablicy products[], przez co
+          // meal_plan/cancellation zawsze wychodzily puste niezaleznie od
+          // tego jak poprawnie je parsujemy.
+          extras: ["products"],
           ...locationPart,
         };
         if (sortPart) request.sort = sortPart;
