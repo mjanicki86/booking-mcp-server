@@ -51,6 +51,10 @@ export interface Hotel {
     longitude?: number;
   };
   meal_plans?: { code?: string; name?: string }[];
+  // Cena śniadania jako platny dodatek (gdy NIE jest wliczone w cene pokoju).
+  // Booking.com zwraca to w polu meal_prices.breakfast z /accommodations/details,
+  // niezaleznie od tego, czy ktorys "product" ma bezplatny meal_plan.
+  breakfast_price_paid?: number;
   url?: string;
   property_type?: string;
   free_cancellation?: boolean;
@@ -84,6 +88,7 @@ export interface FormattedHotel {
   distance_to_center_km: number | null;
   distance_km: number | null;
   breakfast_included: boolean;
+  breakfast_price_paid: number | null;
   free_cancellation: boolean;
   property_type: string | null;
   booking_url: string | null;

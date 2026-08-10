@@ -76,6 +76,10 @@ export class BookingApiClient {
     const coordsById: Record<number, { latitude: number; longitude: number }> = {};
     const facilitiesById: Record<number, number[]> = {};
     const accTypeById: Record<number, number> = {};
+    // Cena sniadania jako platnego dodatku (gdy nie jest wliczone w cene
+    // pokoju) - Booking.com zwraca to w meal_prices.breakfast, dostepne
+    // przy okazji tego samego wywolania /accommodations/details co facilities.
+    const breakfastPriceById: Record<number, number> = {};
 
     if (ids.length > 0) {
       try {
@@ -102,6 +106,10 @@ export class BookingApiClient {
           if (d.id != null && typeof d.accommodation_type === "number") {
             accTypeById[d.id] = d.accommodation_type;
           }
+          const breakfastPrice = d.meal_prices?.breakfast;
+          if (d.id != null && typeof breakfastPrice === "number") {
+            breakfastPriceById[d.id] = breakfastPrice;
+          }
         }
       } catch (err) {
         console.error(
@@ -113,7 +121,7 @@ export class BookingApiClient {
 
     return {
       hotels: rawHotels.map((h: any) =>
-        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById)
+        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById)
       ),
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
@@ -168,7 +176,8 @@ function normalizeHotel(
   namesById: Record<number, string>,
   coordsById: Record<number, { latitude: number; longitude: number }>,
   facilitiesById: Record<number, number[]>,
-  accTypeById: Record<number, number>
+  accTypeById: Record<number, number>,
+  breakfastPriceById: Record<number, number>
 ): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
@@ -215,6 +224,7 @@ function normalizeHotel(
       longitude: coords?.longitude,
     },
     meal_plans: extractMealPlans(raw.products),
+    breakfast_price_paid: breakfastPriceById[hotelId],
     url: raw.url ?? raw.deep_link_url,
     property_type: raw.accommodation_type_name,
     free_cancellation: extractFreeCancellation(raw.products),
@@ -241,6 +251,7 @@ export function formatHotel(hotel: Hotel, currency: string): FormattedHotel {
     breakfast_included: hotel.meal_plans?.some(function (mp) {
       return mp.code === "breakfast_included" || (mp.name != null && mp.name.toLowerCase().indexOf("breakfast") !== -1);
     }) ?? false,
+    breakfast_price_paid: hotel.breakfast_price_paid ?? null,
     free_cancellation: hotel.free_cancellation ?? false,
     property_type: hotel.property_type ?? null,
     booking_url: hotel.url ?? null,
