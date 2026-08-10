@@ -19,8 +19,11 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         "into booking_search_hotels instead of a plain city search. " +
         "If status is 'no_match', tell the user the landmark could not be found by that name in that " +
         "city and ask them to clarify or try a nearby well-known landmark instead. " +
-        "If status is 'multiple_matches', ask the user which one they mean before proceeding - do not " +
-        "guess. " +
+        "If status is 'multiple_matches', you MUST ask the user which one they mean and WAIT for " +
+        "their reply before calling booking_search_hotels. Do NOT guess one, and do NOT search near " +
+        "every candidate 'to be thorough' - checking multiple locations means multiple expensive " +
+        "searches and a long, overwhelming answer instead of a quick, cheap, single one. Asking first " +
+        "is always faster and cheaper than searching around several guesses. " +
         "Note: this only searches within ONE city at a time - you must know (or ask for) the city " +
         "first.",
       inputSchema: FindLandmarkInputSchema.shape,
