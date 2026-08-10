@@ -143,6 +143,26 @@ function extractLocalizedText(field: any): string | null {
   return null;
 }
 
+// Booking.com zwraca informacje o planie posiłków i zasadach anulacji NIE
+// na samym obiekcie hotelu, tylko wewnątrz tablicy "products" (każdy produkt
+// to konkretna oferta/pokój), w polu "policies". Hotel może mieć kilka
+// produktów - część z śniadaniem, część bez; sprawdzamy więc, czy
+// JAKIKOLWIEK produkt spełnia kryterium, nie tylko pierwszy/domyślny.
+function extractMealPlans(products: any): { code?: string; name?: string }[] | undefined {
+  if (!Array.isArray(products) || products.length === 0) return undefined;
+  const plans = products
+    .map((p: any) => p?.policies?.meal_plan?.plan)
+    .filter((plan: any) => typeof plan === "string" && plan !== "no_plan");
+  if (plans.length === 0) return undefined;
+  const unique = Array.from(new Set(plans)) as string[];
+  return unique.map((plan) => ({ code: plan, name: plan }));
+}
+
+function extractFreeCancellation(products: any): boolean {
+  if (!Array.isArray(products)) return false;
+  return products.some((p: any) => p?.policies?.cancellation?.type === "free_cancellation");
+}
+
 function normalizeHotel(
   raw: any,
   namesById: Record<number, string>,
@@ -194,10 +214,10 @@ function normalizeHotel(
       latitude: coords?.latitude,
       longitude: coords?.longitude,
     },
-    meal_plans: raw.meal_plan ? [raw.meal_plan] : undefined,
+    meal_plans: extractMealPlans(raw.products),
     url: raw.url ?? raw.deep_link_url,
     property_type: raw.accommodation_type_name,
-    free_cancellation: raw.is_free_cancellable ?? raw.has_free_cancellation ?? false,
+    free_cancellation: extractFreeCancellation(raw.products),
     facilities: facilitiesById[hotelId],
     accommodation_type_id: accTypeById[hotelId],
   };
