@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId } from "../services/cityResolver.js";
-import { searchLandmarks } from "../services/landmarkResolver.js";
+import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
 import { FindLandmarkInputSchema, FindLandmarkInput } from "../schemas/inputSchemas.js";
 
 export function registerFindLandmarkTool(server: McpServer, client: BookingApiClient): void {
@@ -11,14 +11,17 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
       title: "Find Landmark Coordinates",
       description:
         "Find the real coordinates (latitude/longitude) of a landmark, station, airport or point of " +
-        "interest within a city, using Booking.com's own landmark database. " +
+        "interest within a city, using Booking.com's own landmark database (with a fallback to " +
+        "general geocoding for addresses/squares not in that database). " +
         "USE THIS whenever the user wants hotels near a specific named place or wants a distance-based " +
         "search (e.g. 'within 1km of Fontanna Neptuna', 'near the central station', 'close to the " +
-        "Eiffel Tower') - do NOT invent or guess coordinates yourself. " +
+        "Eiffel Tower', or a plain address/square like 'plac Artura Zawiszy') - do NOT invent or guess " +
+        "coordinates yourself. " +
         "After getting the result, pass the returned latitude/longitude (and a sensible radius_km) " +
         "into booking_search_hotels instead of a plain city search. " +
         "If status is 'no_match', tell the user the landmark could not be found by that name in that " +
-        "city and ask them to clarify or try a nearby well-known landmark instead. " +
+        "city (even via general geocoding) and ask them to clarify or try a nearby well-known landmark " +
+        "instead. " +
         "If status is 'multiple_matches', you MUST ask the user which one they mean and WAIT for " +
         "their reply before calling booking_search_hotels. Do NOT guess one, and do NOT search near " +
         "every candidate 'to be thorough' - checking multiple locations means multiple expensive " +
@@ -51,10 +54,31 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         const matches = await searchLandmarks(client, cityResult.city_id, params.landmark_name, 10);
 
         if (matches.length === 0) {
+          // Booking.com nie ma tego miejsca w swojej kuratorowanej bazie
+          // landmarkow (np. zwykly adres, plac, ulica) - proba geokodowania
+          // zewnetrznego zanim poddamy sie calkowicie.
+          const geocoded = await geocodeAddress(params.landmark_name, cityResult.name);
+          if (geocoded) {
+            const output = {
+              status: "single_match",
+              landmark: geocoded,
+              city: cityResult.name,
+              data_source: "External geocoding (OpenStreetMap Nominatim) - not in Booking.com's own landmark list",
+              note: "This place is not one of Booking.com's curated landmarks, so coordinates come " +
+                "from external geocoding instead - tell the user this location was resolved via " +
+                "general geocoding, slightly less precise than a Booking.com-listed point of interest.",
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+              structuredContent: output,
+            };
+          }
+
           const output = {
             status: "no_match",
             message: "No landmark matching \"" + params.landmark_name + "\" found in " +
-              cityResult.name + ". Ask the user to clarify the name or try another well-known landmark.",
+              cityResult.name + " (checked both Booking.com's landmark database and general " +
+              "geocoding). Ask the user to clarify the name or try another well-known landmark.",
             data_source: "Booking.com API",
           };
           return {

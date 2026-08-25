@@ -5,6 +5,11 @@ import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchema
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 
 const HOSTEL_ACCOMMODATION_TYPE = 203;
+// TODO: zweryfikowac numer w logu accommodation_type_id realnego apartamentu
+// z testu Emilii (Dubrovnik Dream View Apartment / podobne przypadki) -
+// wartosc ponizej jest przypuszczeniem opartym o typowa numeracje Booking.com
+// i wymaga potwierdzenia przed poleganiem na niej w produkcji.
+const APARTMENT_ACCOMMODATION_TYPE = 201;
 
 const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   pool: [103, 104],
@@ -16,10 +21,8 @@ const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   restaurant: [3],
   sauna: [10],
   // Zgodne ze schema (inputSchemas.ts) - enum required_facilities dopuszcza
-  // dokladnie "pets_allowed". Model czasem probowal wyslac samo "pets" -
-  // to zostaje odrzucone juz na etapie walidacji Zod, zanim dotrze tutaj.
-  // Poprawka opisu w schema (patrz inputSchemas.ts) ma to ograniczyc.
-  // ID=4 nadal wymaga weryfikacji - patrz notatka w rozmowie z 2026-08.
+  // dokladnie "pets_allowed". Zweryfikowane krzyzowo z FACILITY_NAMES w
+  // hotelDetailsTool.ts (4: "zwierzeta akceptowane") - mapowanie poprawne.
   pets_allowed: [4],
 };
 
@@ -63,7 +66,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes: (1) city + country for generic 'hotels in [city]' requests (city name in ENGLISH); (2) latitude + longitude (+ radius_km) MANDATORY whenever the user names a specific place or distance - get REAL coordinates by calling booking_find_landmark first (do not invent them yourself), then pass them here. Never fall back to a plain city search and claim proximity.\nCITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, could be a foreign city, could be a typo), do NOT silently substitute the closest city name you happen to know - call booking_search_cities FIRST to see real matches. If the name could plausibly belong to more than one country (e.g. treating 'Lublana' as a typo for 'Lublin' in Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which one they mean rather than picking one yourself - guessing wrong sends completely the wrong results with no warning.\nDATES are OPTIONAL: if not given, call the tool WITHOUT checkin/checkout instead of asking - sample prices ~3 months ahead will be returned.\nPRICE: max_price_per_night / min_price_per_night are enforced server-side - always call the tool again with the new value if the user changes their budget, never just re-describe previous results.\nAMENITIES: use required_facilities (e.g. ['pool','gym']) to filter hotels that must have specific amenities - this is enforced server-side and is far more reliable than checking booking_get_hotel_details on each result yourself.\nQUALITY: min_stars, min_review_score, exclude_hostels (set true for 'a proper hotel, no hostels').\nBREAKFAST: each result has 'breakfast_included' (bundled free in the room rate) AND separately 'breakfast_price_paid' (price if bought as an optional extra, even when NOT included). When breakfast_included is false but breakfast_price_paid has a value, tell the user breakfast is available for that extra charge - don't just say 'no breakfast'.\nOther args: adults, rooms, children_count/children_ages, currency, breakfast_only, free_cancellation_only, results_limit (up to 100), sort_by (price/review_score/distance/stars/popularity).\nNote: this tool does not return full amenity lists or addresses in detail - for full details on ONE specific hotel, call booking_get_hotel_details.\nReturns hotels with prices and booking URLs.",
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes: (1) city + country for generic 'hotels in [city]' requests (city name in ENGLISH); (2) latitude + longitude (+ radius_km) MANDATORY whenever the user names a specific place or distance - get REAL coordinates by calling booking_find_landmark first (do not invent them yourself), then pass them here. Never fall back to a plain city search and claim proximity.\nCITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, could be a foreign city, could be a typo), do NOT silently substitute the closest city name you happen to know - call booking_search_cities FIRST to see real matches. If the name could plausibly belong to more than one country (e.g. treating 'Lublana' as a typo for 'Lublin' in Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which one they mean rather than picking one yourself - guessing wrong sends completely the wrong results with no warning.\nDATES are OPTIONAL: if not given, call the tool WITHOUT checkin/checkout instead of asking - sample prices ~3 months ahead will be returned.\nPRICE: max_price_per_night / min_price_per_night are enforced server-side - always call the tool again with the new value if the user changes their budget, never just re-describe previous results.\nAMENITIES: use required_facilities (e.g. ['pool','gym']) to filter hotels that must have specific amenities - this is enforced server-side and is far more reliable than checking booking_get_hotel_details on each result yourself.\nQUALITY: min_stars is a MINIMUM threshold by default (e.g. min_stars:3 returns 3-4-5 star hotels) - set exact_stars:true when the user names ONE specific star category rather than a floor (e.g. 'hotel 2-gwiazdkowy' vs 'co najmniej 3 gwiazdki'). min_review_score, exclude_hostels (true by default - excludes hostels AND apartment-style listings, set false only if user explicitly says those are fine too).\nBREAKFAST: each result has 'breakfast_included' (bundled free in the room rate) AND separately 'breakfast_price_paid' (price if bought as an optional extra, even when NOT included). When breakfast_included is false but breakfast_price_paid has a value, tell the user breakfast is available for that extra charge - don't just say 'no breakfast'.\nDISTANCE: in coordinates mode, you MUST mention each hotel's distance_km in your reply to the user - this is usually the whole reason they searched near that point, never omit it.\nOther args: adults, rooms, children_count/children_ages, currency, breakfast_only, free_cancellation_only, results_limit (up to 100), sort_by (price/review_score/distance/stars/popularity).\nNote: this tool does not return full amenity lists or addresses in detail - for full details on ONE specific hotel, call booking_get_hotel_details.\nReturns hotels with prices and booking URLs.",
       inputSchema: HotelSearchInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -163,9 +166,17 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         ratingPart = {};
         if (params.min_review_score != null) ratingPart.minimum_review_score = Math.ceil(params.min_review_score);
         if (params.min_stars != null) {
-          const starsArr: number[] = [];
-          for (let s = params.min_stars; s <= 5; s++) starsArr.push(s);
-          ratingPart.stars = starsArr;
+          // exact_stars: user nazwal JEDNA konkretna kategorie gwiazdek
+          // ("hotel 2-gwiazdkowy") - wtedy min_stars NIE jest progiem
+          // minimalnym, tylko dokladna wartoscia. Wczesniej "2*" zawsze
+          // zwracalo hotele 2* i wyzsze, co zglosila Emilia.
+          if (params.exact_stars) {
+            ratingPart.stars = [params.min_stars];
+          } else {
+            const starsArr: number[] = [];
+            for (let s = params.min_stars; s <= 5; s++) starsArr.push(s);
+            ratingPart.stars = starsArr;
+          }
         }
       }
 
@@ -212,6 +223,24 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         const result = await client.searchAccommodations(request);
 
+        // Jesli user prosil o required_facilities, a drugie zapytanie do API
+        // (pobierajace facilities) zawiodlo mimo retry - NIE mowimy "brak
+        // wynikow" (to mylace, bo faktycznie moga istniec pasujace hotele,
+        // po prostu nie wiemy tego w tej chwili). To byla realna przyczyna
+        // zgloszenia Eweliny (zwierzeta+sniadanie+cena w Gdansku dawaly
+        // falszywy "brak wynikow" mimo dostepnych hoteli na Booking.com).
+        if (params.required_facilities?.length && result.facilities_fetch_failed) {
+          return {
+            content: [{
+              type: "text",
+              text: "Nie udało się pobrać danych o udogodnieniach z Booking.com API w tej chwili " +
+                "(problem techniczny, nie brak takich hoteli), więc nie mogę wiarygodnie przefiltrować " +
+                "po: " + params.required_facilities.join(", ") + ". Spróbuj ponownie za chwilę.",
+            }],
+            isError: true,
+          };
+        }
+
         console.error("=== CHECKPOINT: dane pobrane, " + result.hotels.length +
           " hoteli, rozpoczynam filtrowanie...");
 
@@ -233,22 +262,33 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         if (params.min_stars) {
           const filtered = hotels.filter(function (h) {
-            return h.star_rating != null && h.star_rating >= params.min_stars!;
+            if (h.star_rating == null) return false;
+            return params.exact_stars
+              ? h.star_rating === params.min_stars
+              : h.star_rating >= params.min_stars!;
           });
           if (filtered.length > 0) hotels = filtered;
         }
 
         if (params.exclude_hostels) {
+          const beforeExclusion = hotels.length;
           hotels = hotels.filter(function (h) {
-            return h.accommodation_type_id !== HOSTEL_ACCOMMODATION_TYPE;
+            return h.accommodation_type_id !== HOSTEL_ACCOMMODATION_TYPE &&
+                   h.accommodation_type_id !== APARTMENT_ACCOMMODATION_TYPE;
           });
+          console.error("=== DIAG exclude_hostels: " + beforeExclusion + " -> " + hotels.length +
+            " hoteli.");
         }
 
         if (params.required_facilities && params.required_facilities.length > 0) {
           const beforeCount = hotels.length;
+          const rejectedSample: any[] = [];
           hotels = hotels.filter(function (h) {
-            if (!h.facilities) return false;
-            return params.required_facilities!.every(function (amenity) {
+            if (!h.facilities) {
+              if (rejectedSample.length < 5) rejectedSample.push({ hotel_id: h.hotel_id, name: h.name, facilities: null });
+              return false;
+            }
+            const ok = params.required_facilities!.every(function (amenity) {
               const ids = AMENITY_FACILITY_IDS[amenity];
               if (!ids) {
                 // Nieznana wartosc amenity - brak mapowania na ID Booking.com.
@@ -263,10 +303,15 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
               }
               return ids.some(function (id) { return h.facilities!.includes(id); });
             });
+            if (!ok && rejectedSample.length < 5) {
+              rejectedSample.push({ hotel_id: h.hotel_id, name: h.name, facilities: h.facilities });
+            }
+            return ok;
           });
           console.error("=== DIAG required_facilities=" + params.required_facilities.join(",") +
             " zredukowal wyniki z " + beforeCount + " do " + hotels.length +
-            ". Sprawdzane ID: " + JSON.stringify(params.required_facilities.map(a => ({ [a]: AMENITY_FACILITY_IDS[a] }))));
+            ". Sprawdzane ID: " + JSON.stringify(params.required_facilities.map(a => ({ [a]: AMENITY_FACILITY_IDS[a] }))) +
+            ". Probka odrzuconych (realne facilities ID z API): " + JSON.stringify(rejectedSample));
         }
 
         if (params.breakfast_only) {
@@ -359,8 +404,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (maxTotalPrice != null) appliedFilters.push("max " + params.max_price_per_night + " " + params.currency + "/night");
         if (minTotalPrice != null) appliedFilters.push("min " + params.min_price_per_night + " " + params.currency + "/night");
         if (params.min_review_score != null) appliedFilters.push("review score >= " + params.min_review_score);
-        if (params.min_stars) appliedFilters.push(params.min_stars + "+ stars");
-        if (params.exclude_hostels) appliedFilters.push("hostels excluded");
+        if (params.min_stars) appliedFilters.push((params.exact_stars ? "exactly " : "") + params.min_stars + (params.exact_stars ? " stars" : "+ stars"));
+        if (params.exclude_hostels) appliedFilters.push("hostels/apartments excluded");
         if (params.required_facilities && params.required_facilities.length > 0) appliedFilters.push("must have: " + params.required_facilities.join(", "));
         if (appliedFilters.length > 0) {
           output.filters_applied_note = "Filters enforced server-side (guaranteed accurate, not just re-described): " + appliedFilters.join("; ") + ".";

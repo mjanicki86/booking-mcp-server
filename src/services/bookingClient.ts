@@ -81,12 +81,42 @@ export class BookingApiClient {
     // przy okazji tego samego wywolania /accommodations/details co facilities.
     const breakfastPriceById: Record<number, number> = {};
 
+    // WAZNE: jesli to zapytanie o facilities zawiedzie (timeout, rate limit,
+    // chwilowy blad sieci), facilitiesById zostaje puste dla WSZYSTKICH
+    // hoteli. Wczesniej blad byl cicho polykany, a filtr required_facilities
+    // w hotelSearch.ts odrzucal wtedy KAZDY hotel (bo "if (!h.facilities)
+    // return false"), co wygladalo jak falszywy "brak wynikow" mimo ze
+    // hotele spelniajace kryterium realnie istnialy (dokladnie to zglosila
+    // Ewelina przy szukaniu hoteli dla zwierzat w Gdansku). Teraz probujemy
+    // ponownie raz, a jesli nadal sie nie uda - jawnie sygnalizujemy to
+    // wywolujacemu przez facilitiesFetchFailed, zamiast pozwalac na
+    // mylace zero wynikow.
+    let facilitiesFetchFailed = false;
+
     if (ids.length > 0) {
+      const fetchDetails = () =>
+        this.post<any>("/accommodations/details", { accommodations: ids, extras: ["facilities"] });
+
+      let details: any = null;
       try {
-        const details = await this.post<any>("/accommodations/details", {
-          accommodations: ids,
-          extras: ["facilities"],
-        });
+        details = await fetchDetails();
+      } catch (err1) {
+        console.error(
+          "=== Pierwsza proba pobrania facilities nieudana, ponawiam raz: " +
+            (err1 instanceof Error ? err1.message : String(err1))
+        );
+        try {
+          details = await fetchDetails();
+        } catch (err2) {
+          facilitiesFetchFailed = true;
+          console.error(
+            "=== Druga proba rowniez nieudana - facilities NIEDOSTEPNE dla tego zapytania: " +
+              (err2 instanceof Error ? err2.message : String(err2))
+          );
+        }
+      }
+
+      if (details) {
         const detailsData: any[] = details.data ?? details.result ?? [];
         for (const d of detailsData) {
           const nm = extractLocalizedText(d.name);
@@ -111,11 +141,6 @@ export class BookingApiClient {
             breakfastPriceById[d.id] = breakfastPrice;
           }
         }
-      } catch (err) {
-        console.error(
-          "=== Nie udalo sie pobrac nazw/wspolrzednych/udogodnien hoteli: " +
-            (err instanceof Error ? err.message : String(err))
-        );
       }
     }
 
@@ -126,6 +151,7 @@ export class BookingApiClient {
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
       next_page: nextPage,
+      facilities_fetch_failed: facilitiesFetchFailed,
     };
   }
 }

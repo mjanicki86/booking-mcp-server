@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { config } from "../config.js";
+import { sanitizeForOrchestrator } from "../utils/sanitizeForOrchestrator.js";
 
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
@@ -202,7 +203,13 @@ export function registerHotelDetailsTool(
         const hotelCurrency: string | null = typeof hotel.currency === "string" ? hotel.currency : null;
 
         const name = extractText(hotel.name) ?? "Unknown";
-        const description = extractText(hotel.description?.text) ?? extractText(hotel.description) ?? null;
+        const rawDescription = extractText(hotel.description?.text) ?? extractText(hotel.description) ?? null;
+        // Opis z API jest przycinany i normalizowany PRZED przekazaniem dalej -
+        // dlugie, nieprzetworzone bloki tekstu marketingowego byly
+        // najbardziej prawdopodobnym wyzwalaczem falszywych trafien filtra
+        // tresci warstwy orkiestracji (blad "ContentFiltered" zglaszany
+        // przez Emilie przy zwyklym wyszukiwaniu hoteli).
+        const description = rawDescription ? sanitizeForOrchestrator(rawDescription, 800) : null;
         const importantInfo = extractText(hotel.description?.important_information) ?? null;
         const checkinFrom = hotel.checkin_checkout_times?.checkin_from ?? null;
         const checkoutTo = hotel.checkin_checkout_times?.checkout_to ?? null;
@@ -269,7 +276,7 @@ export function registerHotelDetailsTool(
           review_count: hotel.rating?.number_of_reviews ?? null,
           checkin_from: checkinFrom,
           checkout_until: checkoutTo,
-          description: description ? description.slice(0, 1500) : null,
+          description: description,
           important_information: importantInfo ?? null,
           facilities: facilities,
           parking_details: parkingDetails,

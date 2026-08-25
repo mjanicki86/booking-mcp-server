@@ -1,4 +1,5 @@
 import { BookingApiClient } from "./bookingClient.js";
+import { normalizeText } from "./textNormalize.js";
 
 export interface LandmarkSearchResult {
   landmark_id: number;
@@ -9,29 +10,25 @@ export interface LandmarkSearchResult {
 
 const MAX_PAGES = 50;
 
-function normalizeName(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
 function tokenize(name: string): string[] {
-  return normalizeName(name)
+  return normalizeText(name)
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter(Boolean);
 }
 
-// Dla krotkich tokenow (1-2 znaki, np. "of", "st", "i", "w", "z") prosty
-// substring jest bezuzyteczny - niemal kazde slowo zawiera gdzies takie
-// litery. Ten sam blad zlapalismy wczesniej przy dopasowywaniu nazw hoteli
-// (np. "o" z "a&o" falszywie pasowalo do "marriott"). Dla krotkich tokenow
-// wymagamy DOKLADNEJ rownosci; substring tylko dla dluzszych.
+// Dla krótkich tokenów (do 3 znaków włącznie, np. "of", "st", "spa") prosty
+// substring jest niebezpieczny - takie tokeny potrafią wystąpić jako
+// PODCIĄG zupełnie niepowiązanego, dłuższego słowa (np. "spa" wewnątrz
+// "space", "art" wewnątrz "apartment" - ten drugi przypadek złapaliśmy
+// realnie w findHotel.ts przy zapytaniu "Art Hotel Dubrovnik" fałszywie
+// dopasowanym do "Dubrovnik Dream View Apartment"). Próg podniesiony z
+// <=2 na <=3: dla tokenów do 3 znaków wymagamy DOKŁADNEJ równości;
+// substring stosujemy tylko dla dłuższych, gdzie ryzyko przypadkowego
+// trafienia wewnątrz innego słowa jest dużo mniejsze.
 function tokensMatch(a: string, b: string): boolean {
   const minLen = Math.min(a.length, b.length);
-  if (minLen <= 2) {
+  if (minLen <= 3) {
     return a === b;
   }
   return a.indexOf(b) !== -1 || b.indexOf(a) !== -1;
@@ -115,4 +112,33 @@ export async function searchLandmarks(
     " dopasowan: " + JSON.stringify(results.map((r) => r.name)));
 
   return results;
+}
+
+// Fallback dla adresow/placow, ktorych nie ma w kuratorowanej bazie
+// landmarkow Booking.com (np. "plac Artura Zawiszy" w Warszawie).
+// Uzywa darmowego geokodowania OpenStreetMap Nominatim.
+// UWAGA: Nominatim ma limit ok. 1 zapytanie/sekunde i wymaga naglowka
+// User-Agent - przy wiekszym ruchu produkcyjnym rozwazyc platne API
+// (np. Google Geocoding).
+export async function geocodeAddress(query: string, cityName: string): Promise<LandmarkSearchResult | null> {
+  const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
+    encodeURIComponent(query + ", " + cityName);
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "booking-mcp-server/1.0" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return {
+      landmark_id: -1,
+      name: query,
+      latitude: parseFloat(data[0].lat),
+      longitude: parseFloat(data[0].lon),
+    };
+  } catch (err) {
+    console.error("=== Geocoding fallback nieudany: " + (err instanceof Error ? err.message : String(err)));
+    return null;
+  }
 }

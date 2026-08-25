@@ -43,15 +43,25 @@ export const HotelSearchInputSchema = z.object({
   free_cancellation_only: z.boolean().default(false)
     .describe("Only return hotels with free cancellation"),
   min_stars: z.number().int().min(1).max(5).optional()
-    .describe("Minimum hotel star rating (1-5). Only set if user explicitly requests it."),
+    .describe("Star rating (1-5). By default this is a MINIMUM threshold (e.g. min_stars:3 returns " +
+      "3-4-5 star hotels). Only set if user explicitly requests it."),
+  exact_stars: z.boolean().default(false)
+    .describe("Set true ONLY when the user names ONE specific star category (e.g. 'hotel " +
+      "2-gwiazdkowy', 'a 3-star hotel', 'dokładnie 4 gwiazdki') rather than a floor like " +
+      "'co najmniej 3 gwiazdki' or '4 stars or more'. When true, min_stars is treated as an EXACT " +
+      "match, not a minimum. Default false means min_stars behaves as a minimum threshold."),
   min_review_score: z.number().min(1).max(10).optional()
     .describe("Minimum guest review score out of 10. Set whenever the user asks for well-reviewed/highly-rated hotels, e.g. 'reviews above 8' -> 8."),
   required_facilities: z.array(z.enum([
     "pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed"
   ])).optional()
     .describe("List of amenities the hotel MUST have, enforced by the server. Set this whenever the user asks for hotels with a specific amenity. MUST use EXACTLY these string values (nothing else is valid): \"pool\", \"gym\", \"parking\", \"wifi\", \"air_conditioning\", \"spa\", \"restaurant\", \"sauna\", \"pets_allowed\". Examples: 'hotels with a pool' -> [\"pool\"], 'with pool and gym' -> [\"pool\", \"gym\"], 'that accept pets' / 'pet-friendly' / 'dog-friendly' -> [\"pets_allowed\"] (NOT \"pets\" - that value does not exist and will be rejected). Do NOT try to verify amenities by calling booking_get_hotel_details on each result instead - use this parameter so the search itself is filtered correctly."),
-  exclude_hostels: z.boolean().default(false)
-    .describe("Exclude hostels/dormitory-style accommodations from results. Set to true when the user wants a 'proper hotel' or explicitly says no hostels, or implicitly seems to want higher-quality lodging despite a low budget."),
+  exclude_hostels: z.boolean().default(true)
+    .describe("Exclude hostels and apartment-style accommodations from results, keeping only proper " +
+      "hotels. TRUE BY DEFAULT - set to false explicitly only if the user says hostels/apartments are " +
+      "fine too, or asks for 'any type of accommodation'. Do not silently leave hostels/apartments in " +
+      "results just because the user said 'hotels' generically - that word alone means this should " +
+      "stay true."),
   results_limit: z.number().int().min(1).max(100).default(10)
     .describe("Maximum number of hotels to return, up to 100. Set this when the user asks for a specific number of results, e.g. 'show me 50 hotels' -> 50."),
   sort_by: z.string().default("popularity")

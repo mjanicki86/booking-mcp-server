@@ -1,4 +1,5 @@
 import { BookingApiClient } from "./bookingClient.js";
+import { normalizeText } from "./textNormalize.js";
 
 export interface CitySearchResult {
   city_id: number;
@@ -23,14 +24,6 @@ const cityCache = new Map<string, CachedCity>();
 
 // Bezpiecznik: maksymalna liczba stron do przekartkowania dla jednego kraju
 const MAX_PAGES = 200;
-
-function normalizeCityName(cityName: string): string {
-  return cityName
-    .toLowerCase()
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
 
 function extractName(field: any): string | null {
   if (!field) return null;
@@ -62,7 +55,7 @@ export async function resolveCityId(
   country: string
 ): Promise<CitySearchResult | null> {
   const normCountry = country.toLowerCase().trim();
-  const normName = normalizeCityName(cityName);
+  const normName = normalizeText(cityName);
   const cacheKey = normCountry + ":" + normName;
 
   const cached = cityCache.get(cacheKey);
@@ -88,12 +81,12 @@ export async function resolveCityId(
       if (!name || entry.id == null) continue;
       const variants = extractAllNameVariants(entry.name);
 
-      const key = normCountry + ":" + normalizeCityName(name);
+      const key = normCountry + ":" + normalizeText(name);
       if (!cityCache.has(key)) {
         cityCache.set(key, { city_id: entry.id, name: name, name_variants: variants });
       }
 
-      if (!found && normalizeCityName(name) === normName) {
+      if (!found && normalizeText(name) === normName) {
         found = { city_id: entry.id, name: name, name_variants: variants };
       }
     }
@@ -125,7 +118,7 @@ export async function searchCities(
   limit: number
 ): Promise<Omit<CitySearchResult, "name_variants">[]> {
   const normCountry = country.toLowerCase().trim();
-  const normQuery = normalizeCityName(query);
+  const normQuery = normalizeText(query);
   const results: Omit<CitySearchResult, "name_variants">[] = [];
   const seen = new Set<number>();
 
@@ -139,12 +132,12 @@ export async function searchCities(
       const name = extractName(entry.name);
       if (!name || entry.id == null) continue;
 
-      const key = normCountry + ":" + normalizeCityName(name);
+      const key = normCountry + ":" + normalizeText(name);
       if (!cityCache.has(key)) {
         cityCache.set(key, { city_id: entry.id, name: name, name_variants: extractAllNameVariants(entry.name) });
       }
 
-      if (normalizeCityName(name).indexOf(normQuery) !== -1 && !seen.has(entry.id)) {
+      if (normalizeText(name).indexOf(normQuery) !== -1 && !seen.has(entry.id)) {
         seen.add(entry.id);
         results.push({ city_id: entry.id, name: name, country: normCountry });
         if (results.length >= limit) return results;

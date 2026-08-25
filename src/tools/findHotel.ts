@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId } from "../services/cityResolver.js";
+import { normalizeText } from "../services/textNormalize.js";
 import { z } from "zod";
 
 const FindHotelInputSchema = z.object({
@@ -20,16 +21,8 @@ interface HotelCandidate {
   booking_url: string | null;
 }
 
-// Usuwa znaki diakrytyczne, żeby "Lodz" pasowało do "Łódź" itp.
-function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
 function tokenize(text: string): string[] {
-  return normalize(text)
+  return normalizeText(text)
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter(Boolean);
@@ -50,13 +43,18 @@ function tokenizeQuery(text: string): string[] {
   return filtered.length > 0 ? filtered : tokens;
 }
 
-// Dla krótkich tokenów (1-2 znaki, np. "o" ze "P&O", "a" z "a&o") substring
-// jest bezużyteczny - niemal każde słowo zawiera pojedynczą literę gdzieś
-// w środku (np. "o" pasuje do "marriott", "hotel"). Dla takich tokenów
-// wymagamy DOKŁADNEJ równości; substring stosujemy tylko dla dłuższych.
+// Dla krótkich tokenów (do 3 znaków włącznie, np. "o" ze "P&O", "art" z
+// "Art Hotel Dubrovnik") substring jest niebezpieczny - słowa te potrafią
+// wystąpić jako PODCIĄG zupełnie niepowiązanego, dłuższego słowa
+// (np. "art" wewnątrz "apartment" - to realny przypadek, który sprawił,
+// że zapytanie o "Art Hotel Dubrovnik" fałszywie dopasowało się do
+// "Dubrovnik Dream View APARTment"). Próg podniesiony z <=2 na <=3:
+// dla tokenów do 3 znaków wymagamy DOKŁADNEJ równości; substring
+// stosujemy tylko dla dłuższych, gdzie ryzyko przypadkowego trafienia
+// wewnątrz innego słowa jest dużo mniejsze.
 function tokensMatch(hotelToken: string, searchToken: string): boolean {
   const minLen = Math.min(hotelToken.length, searchToken.length);
-  if (minLen <= 2) {
+  if (minLen <= 3) {
     return hotelToken === searchToken;
   }
   return hotelToken.indexOf(searchToken) !== -1 || searchToken.indexOf(hotelToken) !== -1;
@@ -116,9 +114,11 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "IMPORTANT - response contract: the response has a 'status' field. " +
         "If status is 'no_match', tell the user the hotel was not found. " +
         "If status is 'single_match', proceed directly using the returned hotel_id. " +
-        "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST ask the " +
-        "user to clarify which hotel they mean, listing each candidate's name and booking_url so " +
-        "they can tell them apart. Only after the user picks one, call the next tool using that " +
+        "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST end your " +
+        "reply with a question asking which hotel the user means (listing each candidate's name and " +
+        "booking_url so they can tell them apart), and then WAIT for their reply. Do NOT describe, " +
+        "compare, summarize, or fetch details for ANY candidate in the same turn - not even 'just to " +
+        "be helpful'. Only after the user explicitly picks one, call the next tool using that " +
         "specific hotel_id. " +
         "If status is 'partial_match', these are NOT confirmed matches (e.g. only part of the name " +
         "matched) - clearly tell the user this is not a guaranteed match (the property might have " +

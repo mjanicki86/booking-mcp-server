@@ -68,6 +68,15 @@ export interface SearchResult {
   // Token do pobrania kolejnej strony wyników. Brak tego pola oznacza,
   // że to już ostatnia strona (patrz: docs Booking.com - Pagination guide).
   next_page?: string;
+  // Czy pobranie facilities (drugie zapytanie do /accommodations/details
+  // wewnatrz searchAccommodations) zawiodlo mimo retry. Gdy true,
+  // facilities bedzie puste dla WSZYSTKICH hoteli w tym wyniku - to NIE
+  // oznacza ze zaden hotel nie spelnia required_facilities, tylko ze nie
+  // udalo sie tego sprawdzic. Wywolujacy (hotelSearch.ts) musi to
+  // rozroznic od prawdziwego "brak wynikow", zeby nie pokazywac userowi
+  // mylacego falszywego negatywu (przypadek Eweliny: zwierzeta+sniadanie
+  // w Gdansku dawaly "brak wynikow" mimo dostepnych hoteli).
+  facilities_fetch_failed: boolean;
 }
 export interface BookingApiError {
   status: number;
