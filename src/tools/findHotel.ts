@@ -1,6 +1,8 @@
+// src/tools/findHotel.ts
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
-import { resolveCityId } from "../services/cityResolver.js";
+import { resolveCityId, searchCities } from "../services/cityResolver.js";
 import { normalizeText } from "../services/textNormalize.js";
 import { z } from "zod";
 
@@ -94,6 +96,9 @@ function partialMatch(hotelName: string, searchName: string, cityExclusions: Set
 
 const MAX_PAGES = 8; // zabezpieczenie przed nieskończoną pętlą / nadmiarem requestów
 
+// Ile alternatywnych miast o podobnej nazwie sugerowac przy no_match/partial_match.
+const MAX_ALTERNATIVE_CITIES = 5;
+
 export function registerFindHotelTool(server: McpServer, client: BookingApiClient): void {
   server.registerTool(
     "booking_find_hotel",
@@ -111,8 +116,20 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which " +
         "one they mean rather than picking one yourself - guessing wrong sends completely the wrong " +
         "results with no warning. " +
+        "AIRPORT HOTELS - CITY MISMATCH WARNING: hotels with 'Airport' in their name are frequently " +
+        "registered on Booking.com under a SEPARATE nearby town, not the main city named in the " +
+        "hotel's marketing name (airports are often located in a different municipality than the city " +
+        "center, sometimes 20-30km away). Example: hotels for 'Trondheim Airport' are registered " +
+        "under city 'Stjørdal'/'Stjoerdal', not 'Trondheim' - even though the hotel name says " +
+        "'Trondheim Airport'. Also note the SAME real-world town can appear as MULTIPLE DIFFERENT " +
+        "city entries in Booking.com's database with DIFFERENT hotel inventories (e.g. 'Stjørdal' vs " +
+        "'Stjørdalshalsen' vs the transliteration 'Stjoerdal' each returned different hotels in " +
+        "testing) - if status is 'no_match' or 'partial_match' and the response includes " +
+        "'alternative_cities_note', RETRY this tool with one of the suggested alternative city names " +
+        "before telling the user the hotel doesn't exist. " +
         "IMPORTANT - response contract: the response has a 'status' field. " +
-        "If status is 'no_match', tell the user the hotel was not found. " +
+        "If status is 'no_match', tell the user the hotel was not found - but if " +
+        "'alternative_cities_note' is present, try those alternative cities first (see above). " +
         "If status is 'single_match', proceed directly using the returned hotel_id. " +
         "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST end your " +
         "reply with a question asking which hotel the user means (listing each candidate's name and " +
@@ -254,12 +271,44 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           // Warsaw Presidential) albo user popelnil literowke w jednym slowie.
           const partial = allChecked.filter((h) => partialMatch(h.name, searchName, cityExclusions));
 
+          // NOWE: niezaleznie od tego czy partial cos znalazl, sprawdzamy
+          // rowniez czy Booking.com ma INNE miasta o podobnej nazwie do
+          // podanego przez usera - ten sam obszar geograficzny (zwlaszcza
+          // przy hotelach lotniskowych) czesto ma KILKA roznych wpisow
+          // miasta w bazie Booking.com, kazdy z INNYM, nienachodzacym sie
+          // zestawem hoteli (potwierdzony realny przypadek: "Stjørdal" vs
+          // "Stjørdalshalsen" vs "Stjoerdal" dla lotniska Trondheim -
+          // tylko jeden z tych trzech wpisow zawieral szukany hotel).
+          // Sugerujemy je, zamiast od razu twierdzic ze hotel nie istnieje.
+          let alternativeCitiesNote: string | undefined;
+          try {
+            const alternativeCities = await searchCities(
+              client, params.city, params.country, MAX_ALTERNATIVE_CITIES + 1
+            );
+            const otherCities = alternativeCities.filter((c) => c.city_id !== cityResult.city_id);
+            if (otherCities.length > 0) {
+              alternativeCitiesNote =
+                "Booking.com has other similarly-named city entries that were NOT checked in this " +
+                "search (each may have a completely different, non-overlapping hotel inventory): " +
+                otherCities.slice(0, MAX_ALTERNATIVE_CITIES).map((c) => "\"" + c.name + "\"").join(", ") +
+                ". If this is an airport hotel or the city name could be ambiguous, RETRY this tool " +
+                "with one of these city names before concluding the hotel does not exist.";
+              console.error("=== DIAG booking_find_hotel: alternatywne miasta dla \"" + params.city +
+                "\": " + JSON.stringify(otherCities.map((c) => c.name)));
+            }
+          } catch (altErr) {
+            // Blad przy szukaniu alternatywnych miast nie powinien wysadzac
+            // calego zapytania - to tylko dodatkowa podpowiedz, nie krytyczna sciezka.
+            console.error("=== Blad przy szukaniu alternatywnych miast (pomijam): " +
+              (altErr instanceof Error ? altErr.message : String(altErr)));
+          }
+
           if (partial.length > 0) {
             console.error("=== DIAG booking_find_hotel: " + partial.length +
               " czesciowych dopasowan dla \"" + searchName + "\": " +
               JSON.stringify(partial.slice(0, 10).map((h) => h.name)));
 
-            const output = {
+            const output: any = {
               status: "partial_match",
               message: "No hotel exactly matches \"" + params.hotel_name + "\" in " + params.city +
                 ". However, found " + partial.length + " object(s) that partially match (e.g. share " +
@@ -270,18 +319,20 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               candidates: partial.slice(0, 10),
               data_source: "Booking.com API",
             };
+            if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
             return {
               content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
               structuredContent: output,
             };
           }
 
-          const output = {
+          const output: any = {
             status: "no_match",
             message: "No hotel matching \"" + params.hotel_name + "\" found in " + params.city +
               " (checked " + allHotelsCount + " properties across " + pagesFetched + " page(s)).",
             data_source: "Booking.com API",
           };
+          if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
           return {
             content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
             structuredContent: output,
