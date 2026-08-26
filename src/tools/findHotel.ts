@@ -117,19 +117,22 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "one they mean rather than picking one yourself - guessing wrong sends completely the wrong " +
         "results with no warning. " +
         "AIRPORT HOTELS - CITY MISMATCH WARNING: hotels with 'Airport' in their name are frequently " +
-        "registered on Booking.com under a SEPARATE nearby town, not the main city named in the " +
-        "hotel's marketing name (airports are often located in a different municipality than the city " +
-        "center, sometimes 20-30km away). Example: hotels for 'Trondheim Airport' are registered " +
-        "under city 'Stjørdal'/'Stjoerdal', not 'Trondheim' - even though the hotel name says " +
-        "'Trondheim Airport'. Also note the SAME real-world town can appear as MULTIPLE DIFFERENT " +
-        "city entries in Booking.com's database with DIFFERENT hotel inventories (e.g. 'Stjørdal' vs " +
-        "'Stjørdalshalsen' vs the transliteration 'Stjoerdal' each returned different hotels in " +
-        "testing) - if status is 'no_match' or 'partial_match' and the response includes " +
-        "'alternative_cities_note', RETRY this tool with one of the suggested alternative city names " +
-        "before telling the user the hotel doesn't exist. " +
+        "registered on Booking.com under a SEPARATE nearby town that is a DIFFERENT WORD ENTIRELY " +
+        "from the city in the hotel's marketing name - not just a different spelling of it (e.g. " +
+        "hotels for 'Trondheim Airport' are registered under 'Stjørdal', a town with a completely " +
+        "different name, ~30km from Trondheim - text similarity between city names will NOT help " +
+        "here). If a hotel name contains 'Airport' and the search returns no_match or partial_match, " +
+        "USE YOUR OWN GEOGRAPHIC KNOWLEDGE to identify the actual town/municipality where that " +
+        "airport is physically located (not just the city it's named after), call " +
+        "booking_search_cities to confirm the spelling exists in Booking.com's database, and retry " +
+        "booking_find_hotel with that city BEFORE telling the user the hotel doesn't exist. Do not " +
+        "rely only on the 'alternative_cities_note' field for this case - that field only catches " +
+        "spelling variants of the SAME city name (e.g. 'Stjoerdal' vs 'Stjørdalshalsen'), not " +
+        "geographically distinct nearby towns with an unrelated name. " +
         "IMPORTANT - response contract: the response has a 'status' field. " +
         "If status is 'no_match', tell the user the hotel was not found - but if " +
-        "'alternative_cities_note' is present, try those alternative cities first (see above). " +
+        "'alternative_cities_note' is present, try those alternative cities first, and for airport " +
+        "hotels also try your own geographic knowledge as described above, before giving up. " +
         "If status is 'single_match', proceed directly using the returned hotel_id. " +
         "If status is 'multiple_matches', DO NOT GUESS or pick one automatically - you MUST end your " +
         "reply with a question asking which hotel the user means (listing each candidate's name and " +
@@ -271,15 +274,14 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           // Warsaw Presidential) albo user popelnil literowke w jednym slowie.
           const partial = allChecked.filter((h) => partialMatch(h.name, searchName, cityExclusions));
 
-          // NOWE: niezaleznie od tego czy partial cos znalazl, sprawdzamy
-          // rowniez czy Booking.com ma INNE miasta o podobnej nazwie do
-          // podanego przez usera - ten sam obszar geograficzny (zwlaszcza
-          // przy hotelach lotniskowych) czesto ma KILKA roznych wpisow
-          // miasta w bazie Booking.com, kazdy z INNYM, nienachodzacym sie
-          // zestawem hoteli (potwierdzony realny przypadek: "Stjørdal" vs
-          // "Stjørdalshalsen" vs "Stjoerdal" dla lotniska Trondheim -
-          // tylko jeden z tych trzech wpisow zawieral szukany hotel).
-          // Sugerujemy je, zamiast od razu twierdzic ze hotel nie istnieje.
+          // Sprawdzamy rowniez czy Booking.com ma INNE miasta o PODOBNEJ
+          // (tekstowo) nazwie do podanej przez usera - pomaga przy
+          // literowkach/wariantach pisowni TEJ SAMEJ nazwy (np. "Stjoerdal"
+          // vs "Stjørdalshalsen"). NIE pomaga to przy hotelach lotniskowych
+          // zarejestrowanych pod geograficznie odrebna miejscowoscia o
+          // zupelnie innej nazwie (np. "Trondheim" vs "Stjørdal") - ten
+          // przypadek jest obslugiwany przez wiedze geograficzna modelu,
+          // patrz opis narzedzia (AIRPORT HOTELS - CITY MISMATCH WARNING).
           let alternativeCitiesNote: string | undefined;
           try {
             const alternativeCities = await searchCities(
