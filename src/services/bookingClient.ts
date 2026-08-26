@@ -86,8 +86,7 @@ export class BookingApiClient {
     // hoteli. Wczesniej blad byl cicho polykany, a filtr required_facilities
     // w hotelSearch.ts odrzucal wtedy KAZDY hotel (bo "if (!h.facilities)
     // return false"), co wygladalo jak falszywy "brak wynikow" mimo ze
-    // hotele spelniajace kryterium realnie istnialy (dokladnie to zglosila
-    // Ewelina przy szukaniu hoteli dla zwierzat w Gdansku). Teraz probujemy
+    // hotele spelniajace kryterium realnie istnialy. Teraz probujemy
     // ponownie raz, a jesli nadal sie nie uda - jawnie sygnalizujemy to
     // wywolujacemu przez facilitiesFetchFailed, zamiast pozwalac na
     // mylace zero wynikow.
@@ -192,9 +191,30 @@ function extractMealPlans(products: any): { code?: string; name?: string }[] | u
   return unique.map((plan) => ({ code: plan, name: plan }));
 }
 
+// Sprawdza, czy KTORYKOLWIEK produkt hotelu ma REALNIE uzyteczna darmowa
+// anulacje - czyli type:"free_cancellation" ORAZ termin graniczny
+// (free_cancellation_until) ktory jeszcze nie minal.
+//
+// POTWIERDZONY W LOGACH BUG (2026-08-26, Gdansk): Booking.com API zwraca
+// type:"free_cancellation" nawet gdy free_cancellation_until wypada tego
+// samego dnia co checkin (np. "2026-09-02T15:59:59Z" przy checkinie
+// 2026-09-02) - praktycznie bezuzyteczne dla goscia, ktory nie zdazy nic
+// odwolac. Wczesniejsza wersja sprawdzala tylko pole "type", ignorujac
+// czy termin graniczny ma jeszcze jakikolwiek sens w momencie wywolania
+// zapytania. To provadzilo do pokazywania hoteli jako "z darmowa
+// anulacja", mimo ze faktycznie ta anulacja nie daje juz zadnej realnej
+// elastycznosci.
 function extractFreeCancellation(products: any): boolean {
   if (!Array.isArray(products)) return false;
-  return products.some((p: any) => p?.policies?.cancellation?.type === "free_cancellation");
+  const now = new Date();
+  return products.some((p: any) => {
+    if (p?.policies?.cancellation?.type !== "free_cancellation") return false;
+    const until = p?.policies?.cancellation?.free_cancellation_until;
+    // Brak konkretnej daty granicznej - ufamy samemu polu "type"
+    // (moze byc bezterminowa darmowa anulacja, zdarza sie w danych API).
+    if (!until) return true;
+    return new Date(until).getTime() > now.getTime();
+  });
 }
 
 function normalizeHotel(
