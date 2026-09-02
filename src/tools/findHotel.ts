@@ -1,10 +1,10 @@
-// src/tools/findHotel.ts
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId, searchCities } from "../services/cityResolver.js";
 import { normalizeText } from "../services/textNormalize.js";
 import { z } from "zod";
+
+const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 const FindHotelInputSchema = z.object({
   hotel_name: z.string().min(2).max(200)
@@ -13,6 +13,15 @@ const FindHotelInputSchema = z.object({
     .describe('City where the hotel is located, IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate the city name to English before calling.'),
   country: z.string().min(2).max(2)
     .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Infer it from the city name.'),
+  checkin: z.string().regex(dateRegex).optional()
+    .describe("Check-in date in YYYY-MM-DD format. OPTIONAL, but if the user already mentioned " +
+      "dates anywhere in the conversation (for this hotel or an earlier search in the same city), " +
+      "PASS THEM HERE - some hotels are seasonal or have limited availability, so searching with " +
+      "the wrong (default, arbitrary ~90-days-ahead) dates can cause a false 'not found' for a hotel " +
+      "that is actually available on the user's real dates. Omit only if truly no dates were " +
+      "mentioned yet."),
+  checkout: z.string().regex(dateRegex).optional()
+    .describe("Check-out date in YYYY-MM-DD format. Must be provided together with checkin."),
 });
 
 type FindHotelInput = z.infer<typeof FindHotelInputSchema>;
@@ -54,12 +63,29 @@ function tokenizeQuery(text: string): string[] {
 // dla tokenów do 3 znaków wymagamy DOKŁADNEJ równości; substring
 // stosujemy tylko dla dłuższych, gdzie ryzyko przypadkowego trafienia
 // wewnątrz innego słowa jest dużo mniejsze.
+//
+// Dodatkowo: fallback dla polskiej fleksji (odmiana przez przypadki) -
+// "targi"/"targach", "hotel"/"hotelu" itp. czesto roznia sie tylko
+// koncowka. Pelna lematyzacja wymagalaby slownika NLP - zamiast tego
+// porownujemy "rdzen" (pierwsze min. 4 znaki), co lapie wiekszosc
+// przypadkow bez nadmiernego ryzyka falszywych trafien.
+const STEM_MIN_LENGTH = 4;
+
+function stemsMatch(a: string, b: string): boolean {
+  if (a.length < STEM_MIN_LENGTH || b.length < STEM_MIN_LENGTH) return false;
+  const stemLen = Math.min(STEM_MIN_LENGTH, a.length, b.length);
+  return a.slice(0, stemLen) === b.slice(0, stemLen);
+}
+
 function tokensMatch(hotelToken: string, searchToken: string): boolean {
   const minLen = Math.min(hotelToken.length, searchToken.length);
   if (minLen <= 3) {
     return hotelToken === searchToken;
   }
-  return hotelToken.indexOf(searchToken) !== -1 || searchToken.indexOf(hotelToken) !== -1;
+  if (hotelToken.indexOf(searchToken) !== -1 || searchToken.indexOf(hotelToken) !== -1) {
+    return true;
+  }
+  return stemsMatch(hotelToken, searchToken);
 }
 
 // Dopasowanie tokenowe zamiast prostego substring: każde słowo z zapytania
@@ -106,9 +132,15 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       title: "Find Hotel by Name",
       description:
         "Find a hotel by name in any city worldwide to get its hotel_id, which can then be used " +
-        "with booking_get_hotel_details. Use this when the user asks about a specific hotel by name " +
-        "but has not provided dates. Does NOT require dates. Args: hotel_name, city (in English), " +
-        "country (2-letter code). " +
+        "with booking_get_hotel_details. Args: hotel_name, city (in English), country (2-letter code). " +
+        "DATES: checkin/checkout are OPTIONAL (a default ~90-days-ahead window is used if omitted), " +
+        "BUT if the user has already given or mentioned dates anywhere in this conversation - for " +
+        "this search or an earlier one in the same city/trip - you MUST pass them here too. Some " +
+        "hotels are seasonal, close for part of the year, or have very limited availability, so " +
+        "using the arbitrary default date window instead of the user's real dates can cause a false " +
+        "'not found' for a hotel that genuinely exists and is available on the dates the user " +
+        "actually cares about. Always carry known dates forward into every tool call in the same " +
+        "conversation, not just booking_search_hotels. " +
         "CITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, " +
         "could be a foreign city, could be a typo), do NOT silently substitute the closest city name " +
         "you happen to know - call booking_search_cities FIRST to see real matches. If the name could " +
@@ -119,16 +151,17 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "AIRPORT HOTELS - CITY MISMATCH WARNING: hotels with 'Airport' in their name are frequently " +
         "registered on Booking.com under a SEPARATE nearby town that is a DIFFERENT WORD ENTIRELY " +
         "from the city in the hotel's marketing name - not just a different spelling of it (e.g. " +
-        "hotels for 'Trondheim Airport' are registered under 'Stjørdal', a town with a completely " +
-        "different name, ~30km from Trondheim - text similarity between city names will NOT help " +
-        "here). If a hotel name contains 'Airport' and the search returns no_match or partial_match, " +
-        "USE YOUR OWN GEOGRAPHIC KNOWLEDGE to identify the actual town/municipality where that " +
-        "airport is physically located (not just the city it's named after), call " +
+        "hotels for 'Trondheim Airport' are registered under 'Stjørdal', hotels for 'Stavanger " +
+        "Airport' under 'Sola', hotels near Frankfurt sometimes under 'Seeheim-Jugenheim' rather than " +
+        "the city named in the marketing name - text similarity between city names will NOT help " +
+        "here, since these are unrelated words). This is a CONFIRMED, REPEATED pattern (3+ " +
+        "independent cases) - if a hotel name contains 'Airport' and the search returns no_match or " +
+        "partial_match, USE YOUR OWN GEOGRAPHIC KNOWLEDGE to identify the actual town/municipality " +
+        "where that airport is physically located (not just the city it's named after), call " +
         "booking_search_cities to confirm the spelling exists in Booking.com's database, and retry " +
         "booking_find_hotel with that city BEFORE telling the user the hotel doesn't exist. Do not " +
         "rely only on the 'alternative_cities_note' field for this case - that field only catches " +
-        "spelling variants of the SAME city name (e.g. 'Stjoerdal' vs 'Stjørdalshalsen'), not " +
-        "geographically distinct nearby towns with an unrelated name. " +
+        "spelling variants of the SAME city name, not geographically distinct nearby towns. " +
         "IMPORTANT - response contract: the response has a 'status' field. " +
         "If status is 'no_match', tell the user the hotel was not found - but if " +
         "'alternative_cities_note' is present, try those alternative cities first, and for airport " +
@@ -177,14 +210,23 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       ]);
 
       try {
-        // Szukamy w terminie ok. 90 dni do przodu - szeroka dostepnosc hoteli
-        const base = new Date();
-        base.setDate(base.getDate() + 90);
-        const co = new Date(base);
-        co.setDate(co.getDate() + 2);
-
-        const checkin = base.toISOString().split("T")[0];
-        const checkout = co.toISOString().split("T")[0];
+        // Daty: jesli user juz podal checkin/checkout (przekazane przez
+        // model z konwersacji), UZYWAMY ICH - inaczej hotel sezonowy lub
+        // o ograniczonej dostepnosci moze falszywie wyjsc jako "no_match"
+        // na sztywnym, arbitralnym oknie +90 dni, mimo ze realnie jest
+        // dostepny na daty, o ktore userowi chodzi (potwierdzony przypadek:
+        // "Villa Toscania" w Poznaniu - obecna w wynikach dla 17-19.09,
+        // nieobecna w domyslnym oknie grudniowym).
+        let checkin = params.checkin;
+        let checkout = params.checkout;
+        if (!checkin || !checkout) {
+          const base = new Date();
+          base.setDate(base.getDate() + 90);
+          const co = new Date(base);
+          co.setDate(co.getDate() + 2);
+          checkin = checkin ?? base.toISOString().split("T")[0];
+          checkout = checkout ?? co.toISOString().split("T")[0];
+        }
 
         const baseRequest = {
           booker: { country: "nl", platform: "desktop" },
@@ -305,6 +347,20 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               (altErr instanceof Error ? altErr.message : String(altErr)));
           }
 
+          // Informacja diagnostyczna: jesli user NIE podal dat, a hotel
+          // moze byc sezonowy - warto to zaznaczyc, zeby model wiedzial
+          // ze warto sprobowac ponownie z konkretnymi datami zamiast
+          // od razu twierdzic ze hotel nie istnieje.
+          const usedDefaultDates = !params.checkin || !params.checkout;
+          const datesNote = usedDefaultDates
+            ? "This search used a DEFAULT date window (" + checkin + " to " + checkout + ") because " +
+              "no dates were provided. If the user has mentioned real travel dates anywhere in this " +
+              "conversation, RETRY with those exact dates (checkin/checkout params) before concluding " +
+              "the hotel doesn't exist - some hotels are seasonal or have very limited availability " +
+              "and may not appear in this default window even though they exist and are bookable on " +
+              "the user's actual dates."
+            : undefined;
+
           if (partial.length > 0) {
             console.error("=== DIAG booking_find_hotel: " + partial.length +
               " czesciowych dopasowan dla \"" + searchName + "\": " +
@@ -322,6 +378,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               data_source: "Booking.com API",
             };
             if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
+            if (datesNote) output.dates_note = datesNote;
             return {
               content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
               structuredContent: output,
@@ -335,6 +392,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
             data_source: "Booking.com API",
           };
           if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
+          if (datesNote) output.dates_note = datesNote;
           return {
             content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
             structuredContent: output,
