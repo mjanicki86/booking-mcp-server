@@ -22,6 +22,12 @@ const FindHotelInputSchema = z.object({
       "mentioned yet."),
   checkout: z.string().regex(dateRegex).optional()
     .describe("Check-out date in YYYY-MM-DD format. Must be provided together with checkin."),
+  address_hint: z.string().min(2).max(200).optional()
+    .describe("Optional street name, address fragment, or neighbourhood the user mentioned to help " +
+      "distinguish between multiple hotels with similar names (e.g. user says 'Novotel at " +
+      "Wielkopolska street'). When there are multiple name matches, this is used automatically to " +
+      "narrow down to the right one - you don't need to ask the user again if you already have this " +
+      "information from their message."),
 });
 
 type FindHotelInput = z.infer<typeof FindHotelInputSchema>;
@@ -32,6 +38,10 @@ interface HotelCandidate {
   booking_url: string | null;
 }
 
+interface HotelCandidateWithAddress extends HotelCandidate {
+  address: string | null;
+}
+
 function tokenize(text: string): string[] {
   return normalizeText(text)
     .replace(/[^a-z0-9\s]/g, " ")
@@ -39,13 +49,6 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
-// Generyczne słowa typu "hotel" czy "hotels" pojawiają się w zapytaniach
-// użytkownika ("Warsaw Marriott Hotel"), ale rzadko w oficjalnych nazwach
-// na Booking.com (np. "Courtyard by Marriott Warsaw Airport" nie zawiera
-// nigdzie słowa "hotel"). Wymaganie ich jako obowiązkowego tokenu
-// niepotrzebnie blokuje trafne dopasowania - usuwamy je z zapytania,
-// zachowując fallback na wypadek gdyby usera zapytanie składało się
-// WYŁĄCZNIE z takiego słowa (żeby nie dopasować przypadkiem wszystkiego).
 const GENERIC_QUERY_STOPWORDS = new Set(["hotel", "hotels"]);
 
 function tokenizeQuery(text: string): string[] {
@@ -54,21 +57,6 @@ function tokenizeQuery(text: string): string[] {
   return filtered.length > 0 ? filtered : tokens;
 }
 
-// Dla krótkich tokenów (do 3 znaków włącznie, np. "o" ze "P&O", "art" z
-// "Art Hotel Dubrovnik") substring jest niebezpieczny - słowa te potrafią
-// wystąpić jako PODCIĄG zupełnie niepowiązanego, dłuższego słowa
-// (np. "art" wewnątrz "apartment" - to realny przypadek, który sprawił,
-// że zapytanie o "Art Hotel Dubrovnik" fałszywie dopasowało się do
-// "Dubrovnik Dream View APARTment"). Próg podniesiony z <=2 na <=3:
-// dla tokenów do 3 znaków wymagamy DOKŁADNEJ równości; substring
-// stosujemy tylko dla dłuższych, gdzie ryzyko przypadkowego trafienia
-// wewnątrz innego słowa jest dużo mniejsze.
-//
-// Dodatkowo: fallback dla polskiej fleksji (odmiana przez przypadki) -
-// "targi"/"targach", "hotel"/"hotelu" itp. czesto roznia sie tylko
-// koncowka. Pelna lematyzacja wymagalaby slownika NLP - zamiast tego
-// porownujemy "rdzen" (pierwsze min. 4 znaki), co lapie wiekszosc
-// przypadkow bez nadmiernego ryzyka falszywych trafien.
 const STEM_MIN_LENGTH = 4;
 
 function stemsMatch(a: string, b: string): boolean {
@@ -88,10 +76,6 @@ function tokensMatch(hotelToken: string, searchToken: string): boolean {
   return stemsMatch(hotelToken, searchToken);
 }
 
-// Dopasowanie tokenowe zamiast prostego substring: każde słowo z zapytania
-// musi wystąpić gdzieś w nazwie hotelu, niezależnie od kolejności i słów
-// dodatkowych. Dzięki temu "Focus Premium Warszawa" znajdzie hotel
-// "Focus Hotel Premium Warszawa" (słowo "Hotel" pomiędzy nie przeszkadza).
 function isMatch(hotelName: string, searchName: string): boolean {
   const hotelTokens = tokenize(hotelName);
   const searchTokens = tokenizeQuery(searchName);
@@ -102,12 +86,6 @@ function isMatch(hotelName: string, searchName: string): boolean {
   );
 }
 
-// Dopasowanie CZĘŚCIOWE: przynajmniej jeden (nie wszystkie) ZNACZĄCY token
-// z zapytania pasuje do nazwy hotelu. Używane jako fallback, gdy pełne
-// dopasowanie nic nie znajdzie. Tokeny odpowiadające nazwie miasta są
-// pomijane jako kryterium - skoro wszystkie sprawdzane hotele i tak są
-// już w tym mieście, samo "Warszawa" w nazwie hotelu to prawie żaden
-// sygnał i tylko zaśmieca listę propozycji niepowiązanymi obiektami.
 function partialMatch(hotelName: string, searchName: string, cityExclusions: Set<string>): boolean {
   const hotelTokens = tokenize(hotelName);
   const rawSearchTokens = tokenizeQuery(searchName);
@@ -120,9 +98,57 @@ function partialMatch(hotelName: string, searchName: string, cityExclusions: Set
   );
 }
 
-const MAX_PAGES = 8; // zabezpieczenie przed nieskończoną pętlą / nadmiarem requestów
+// Sprawdza, czy fragment adresu podany przez usera (address_hint) pasuje
+// do rzeczywistego adresu hotelu - dopasowanie tokenowe, tolerancyjne na
+// odmiane (np. "Wielkopolska"/"Wielkopolskiej") dzieki stemsMatch.
+function addressMatches(hotelAddress: string, addressHint: string): boolean {
+  const addressTokens = tokenize(hotelAddress);
+  const hintTokens = tokenizeQuery(addressHint);
+  if (hintTokens.length === 0 || addressTokens.length === 0) return false;
 
-// Ile alternatywnych miast o podobnej nazwie sugerowac przy no_match/partial_match.
+  // Wystarczy ZE CHOC JEDEN znaczacy token adresu (np. nazwa ulicy) pasuje -
+  // user rzadko poda caly, dokladny adres, czesciej sam fragment/ulice.
+  return hintTokens.some((ht) =>
+    addressTokens.some((at) => tokensMatch(at, ht))
+  );
+}
+
+// Doclaga adresy dla listy kandydatow JEDNYM zapytaniem do API (nie osobno
+// na kazdego), zeby umozliwic zawezenie multiple_matches po adresie/ulicy
+// podanej przez usera - bez tego address_hint nie mialby jak zadzialac,
+// bo HotelCandidate z wyszukiwania nie zawiera adresu. Uzywamy lekkiego
+// zapytania (bez extras: facilities/description/rooms), bo potrzebujemy
+// tylko pola adresowego, nie pelnych szczegolow hotelu.
+async function fetchAddressesForCandidates(
+  client: BookingApiClient,
+  candidates: HotelCandidate[]
+): Promise<HotelCandidateWithAddress[]> {
+  if (candidates.length === 0) return [];
+  try {
+    const raw = await client.post<any>("/accommodations/details", {
+      accommodations: candidates.map((c) => c.hotel_id),
+    });
+    const data: any[] = raw.data ?? raw.result ?? [];
+    const addressById = new Map<number, string>();
+    for (const d of data) {
+      if (d.id == null) continue;
+      const addr = d.location?.address;
+      const addressText = typeof addr === "string"
+        ? addr
+        : (addr && typeof addr === "object" ? (addr["en-gb"] ?? Object.values(addr)[0]) : null);
+      if (typeof addressText === "string") {
+        addressById.set(d.id, addressText);
+      }
+    }
+    return candidates.map((c) => ({ ...c, address: addressById.get(c.hotel_id) ?? null }));
+  } catch (err) {
+    console.error("=== Blad przy pobieraniu adresow kandydatow (pomijam zawezanie po adresie): " +
+      (err instanceof Error ? err.message : String(err)));
+    return candidates.map((c) => ({ ...c, address: null }));
+  }
+}
+
+const MAX_PAGES = 8;
 const MAX_ALTERNATIVE_CITIES = 5;
 
 export function registerFindHotelTool(server: McpServer, client: BookingApiClient): void {
@@ -141,6 +167,11 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "'not found' for a hotel that genuinely exists and is available on the dates the user " +
         "actually cares about. Always carry known dates forward into every tool call in the same " +
         "conversation, not just booking_search_hotels. " +
+        "ADDRESS DISAMBIGUATION: if the user mentions a street name, neighbourhood, or address " +
+        "fragment along with the hotel name (e.g. 'Novotel at Wielkopolska street'), ALWAYS pass it " +
+        "as address_hint - this is used automatically server-side to narrow down which hotel they " +
+        "mean when there are multiple name matches, so you do NOT need to ask the user again if you " +
+        "already have this information. Never silently ignore an address the user already gave you. " +
         "CITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, " +
         "could be a foreign city, could be a typo), do NOT silently substitute the closest city name " +
         "you happen to know - call booking_search_cities FIRST to see real matches. If the name could " +
@@ -172,7 +203,9 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "booking_url so they can tell them apart), and then WAIT for their reply. Do NOT describe, " +
         "compare, summarize, or fetch details for ANY candidate in the same turn - not even 'just to " +
         "be helpful'. Only after the user explicitly picks one, call the next tool using that " +
-        "specific hotel_id. " +
+        "specific hotel_id. Note: if you provided address_hint and it narrowed the candidates down to " +
+        "one, you will get 'single_match' instead - this manual disambiguation step is only needed " +
+        "when address_hint was absent or didn't uniquely resolve it. " +
         "If status is 'partial_match', these are NOT confirmed matches (e.g. only part of the name " +
         "matched) - clearly tell the user this is not a guaranteed match (the property might have " +
         "been renamed, or these might be unrelated hotels that just share a word), list the " +
@@ -199,24 +232,12 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         };
       }
 
-      // Nazwa miasta (we wszystkich wariantach jezykowych zwroconych przez
-      // Booking.com, np. "Warsaw" i "Warszawa" naraz) jest zbyt slabym
-      // sygnalem dla dopasowania czesciowego - wszystkie sprawdzane hotele
-      // juz sa w tym miescie, wiec wykluczamy jej tokeny z kryteriow
-      // partialMatch, niezaleznie w jakim jezyku user ja wpisal.
       const cityExclusions = new Set<string>([
         ...tokenize(params.city),
         ...cityResult.name_variants.flatMap((v) => tokenize(v)),
       ]);
 
       try {
-        // Daty: jesli user juz podal checkin/checkout (przekazane przez
-        // model z konwersacji), UZYWAMY ICH - inaczej hotel sezonowy lub
-        // o ograniczonej dostepnosci moze falszywie wyjsc jako "no_match"
-        // na sztywnym, arbitralnym oknie +90 dni, mimo ze realnie jest
-        // dostepny na daty, o ktore userowi chodzi (potwierdzony przypadek:
-        // "Villa Toscania" w Poznaniu - obecna w wynikach dla 17-19.09,
-        // nieobecna w domyslnym oknie grudniowym).
         let checkin = params.checkin;
         let checkout = params.checkout;
         if (!checkin || !checkout) {
@@ -245,15 +266,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         let nextPageToken: string | undefined = undefined;
         let pagesFetched = 0;
 
-        // Przechodzimy przez wszystkie strony wyników (next_page), dopóki:
-        // - nie znajdziemy dopasowania, albo
-        // - nie skończą się strony, albo
-        // - nie osiągniemy limitu bezpieczeństwa MAX_PAGES
         do {
-          // WAŻNE: przy paginacji trzeba wysłać WYŁĄCZNIE { page: token },
-          // bez żadnych innych pól - Booking.com odrzuca zapytanie błędem
-          // 400 "conflicting_parameters", jeśli 'page' występuje razem
-          // z czymkolwiek innym. Token sam koduje oryginalne parametry.
           const requestBody = nextPageToken
             ? { page: nextPageToken }
             : baseRequest;
@@ -262,9 +275,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           try {
             result = await client.searchAccommodations(requestBody);
           } catch (pageErr) {
-            // Awaria pojedynczej strony (np. wygasły/niepoprawny token) nie
-            // powinna wysadzać całego zapytania - traktujemy to jak koniec
-            // dostępnych wyników i pracujemy z tym, co już mamy.
             console.error(
               "=== Blad przy pobieraniu strony paginacji (pomijam dalsze strony): " +
                 (pageErr instanceof Error ? pageErr.message : String(pageErr))
@@ -287,11 +297,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
             }
           }
 
-          nextPageToken = result.next_page; // undefined jeśli to ostatnia strona
+          nextPageToken = result.next_page;
 
-          // Jeśli już mamy dopasowania, nie ma sensu ciągnąć kolejnych stron -
-          // rzadko zdarza się, żeby ten sam hotel (po nazwie) występował dalej,
-          // a oszczędza to czas i requesty.
           if (matched.length > 0) {
             break;
           }
@@ -306,24 +313,45 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           };
         }
 
+        // WIECEJ NIZ JEDNO dopasowanie nazwy - jesli user podal address_hint,
+        // probujemy zawezic PRZED zwroceniem multiple_matches do usera.
+        // Jeden dodatkowy, lekki request API (adresy wszystkich kandydatow
+        // naraz), niezaleznie od liczby kandydatow.
+        if (matched.length > 1 && params.address_hint) {
+          const withAddresses = await fetchAddressesForCandidates(client, matched);
+          const addressFiltered = withAddresses.filter((c) =>
+            c.address != null && addressMatches(c.address, params.address_hint!)
+          );
+
+          console.error("=== DIAG booking_find_hotel: address_hint=\"" + params.address_hint +
+            "\" zawezil " + matched.length + " dopasowan do " + addressFiltered.length + ": " +
+            JSON.stringify(addressFiltered.map((c) => ({ name: c.name, address: c.address }))));
+
+          if (addressFiltered.length === 1) {
+            const chosen = addressFiltered[0];
+            const output = {
+              status: "single_match",
+              hotel: { hotel_id: chosen.hotel_id, name: chosen.name, booking_url: chosen.booking_url },
+              data_source: "Booking.com API",
+              note: "Narrowed down from " + matched.length + " name matches using the provided address_hint.",
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
+              structuredContent: output,
+            };
+          }
+          // Jesli address_hint zawezil do 0 lub nadal >1 - kontynuujemy
+          // do standardowej sciezki multiple_matches ponizej, z pelna
+          // (nie zawezona) lista kandydatow, bo nie mamy pewnosci ktora
+          // podpowiedz adresowa byla trafna.
+        }
+
         if (matched.length === 0) {
           console.error("=== DIAG booking_find_hotel: brak pelnego dopasowania dla \"" + searchName +
             "\" wsrod " + allHotelsCount + " sprawdzonych hoteli (" + pagesFetched + " stron).");
 
-          // Zanim poddamy sie calkowicie, sprawdzamy dopasowanie CZESCIOWE
-          // (choc jeden token pasuje) wsrod wszystkich sprawdzonych hoteli -
-          // pomaga np. gdy hotel zmienil nazwe marki (jak Warsaw Marriott ->
-          // Warsaw Presidential) albo user popelnil literowke w jednym slowie.
           const partial = allChecked.filter((h) => partialMatch(h.name, searchName, cityExclusions));
 
-          // Sprawdzamy rowniez czy Booking.com ma INNE miasta o PODOBNEJ
-          // (tekstowo) nazwie do podanej przez usera - pomaga przy
-          // literowkach/wariantach pisowni TEJ SAMEJ nazwy (np. "Stjoerdal"
-          // vs "Stjørdalshalsen"). NIE pomaga to przy hotelach lotniskowych
-          // zarejestrowanych pod geograficznie odrebna miejscowoscia o
-          // zupelnie innej nazwie (np. "Trondheim" vs "Stjørdal") - ten
-          // przypadek jest obslugiwany przez wiedze geograficzna modelu,
-          // patrz opis narzedzia (AIRPORT HOTELS - CITY MISMATCH WARNING).
           let alternativeCitiesNote: string | undefined;
           try {
             const alternativeCities = await searchCities(
@@ -337,20 +365,12 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
                 otherCities.slice(0, MAX_ALTERNATIVE_CITIES).map((c) => "\"" + c.name + "\"").join(", ") +
                 ". If this is an airport hotel or the city name could be ambiguous, RETRY this tool " +
                 "with one of these city names before concluding the hotel does not exist.";
-              console.error("=== DIAG booking_find_hotel: alternatywne miasta dla \"" + params.city +
-                "\": " + JSON.stringify(otherCities.map((c) => c.name)));
             }
           } catch (altErr) {
-            // Blad przy szukaniu alternatywnych miast nie powinien wysadzac
-            // calego zapytania - to tylko dodatkowa podpowiedz, nie krytyczna sciezka.
             console.error("=== Blad przy szukaniu alternatywnych miast (pomijam): " +
               (altErr instanceof Error ? altErr.message : String(altErr)));
           }
 
-          // Informacja diagnostyczna: jesli user NIE podal dat, a hotel
-          // moze byc sezonowy - warto to zaznaczyc, zeby model wiedzial
-          // ze warto sprobowac ponownie z konkretnymi datami zamiast
-          // od razu twierdzic ze hotel nie istnieje.
           const usedDefaultDates = !params.checkin || !params.checkout;
           const datesNote = usedDefaultDates
             ? "This search used a DEFAULT date window (" + checkin + " to " + checkout + ") because " +
@@ -362,10 +382,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
             : undefined;
 
           if (partial.length > 0) {
-            console.error("=== DIAG booking_find_hotel: " + partial.length +
-              " czesciowych dopasowan dla \"" + searchName + "\": " +
-              JSON.stringify(partial.slice(0, 10).map((h) => h.name)));
-
             const output: any = {
               status: "partial_match",
               message: "No hotel exactly matches \"" + params.hotel_name + "\" in " + params.city +
@@ -413,16 +429,20 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           };
         }
 
-        // Wiecej niz jedno dopasowanie - model MUSI dopytac uzytkownika (patrz opis narzedzia)
         console.error("=== DIAG booking_find_hotel: " + matched.length + " dopasowan dla \"" +
           searchName + "\": " + JSON.stringify(matched.map(m => m.name)));
-        const output = {
+        const output: any = {
           status: "multiple_matches",
           message: "Found " + matched.length + " hotels matching \"" + params.hotel_name + "\" in " +
             params.city + ". Ask the user which one they mean before proceeding.",
           candidates: matched.slice(0, 10),
           data_source: "Booking.com API",
         };
+        if (params.address_hint) {
+          output.address_hint_note = "address_hint=\"" + params.address_hint + "\" was provided but " +
+            "did not uniquely identify one hotel (either no address matched, or more than one did). " +
+            "You still need to ask the user to confirm.";
+        }
 
         return {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
