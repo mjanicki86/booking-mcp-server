@@ -17,21 +17,34 @@ function tokenize(name: string): string[] {
     .filter(Boolean);
 }
 
-// Dla krótkich tokenów (do 3 znaków włącznie, np. "of", "st", "spa") prosty
-// substring jest niebezpieczny - takie tokeny potrafią wystąpić jako
-// PODCIĄG zupełnie niepowiązanego, dłuższego słowa (np. "spa" wewnątrz
-// "space", "art" wewnątrz "apartment" - ten drugi przypadek złapaliśmy
-// realnie w findHotel.ts przy zapytaniu "Art Hotel Dubrovnik" fałszywie
-// dopasowanym do "Dubrovnik Dream View Apartment"). Próg podniesiony z
-// <=2 na <=3: dla tokenów do 3 znaków wymagamy DOKŁADNEJ równości;
-// substring stosujemy tylko dla dłuższych, gdzie ryzyko przypadkowego
-// trafienia wewnątrz innego słowa jest dużo mniejsze.
+// Dla krótkich tokenów (do 3 znaków włącznie) prosty substring jest
+// niebezpieczny - moga wystapic jako PODCIAG zupelnie niepowiazanego,
+// dluzszego slowa (np. "art" wewnatrz "apartment").
+//
+// Dodatkowo: fallback dla polskiej fleksji (odmiana przez przypadki) -
+// "targi"/"targach", "hotel"/"hotelu" itp. czesto roznia sie tylko
+// koncowka. Pelna lematyzacja wymagalaby slownika NLP - zamiast tego
+// porownujemy "rdzen" (pierwsze min. 4 znaki). POTWIERDZONY BUG: ta sama
+// funkcja w findHotel.ts miala juz ten fix, ale zabraklo go tutaj -
+// "targach" (Poznan International Fair) dawalo 0 dopasowan mimo ze
+// "Targi" jest w nazwie landmarku.
+const STEM_MIN_LENGTH = 4;
+
+function stemsMatch(a: string, b: string): boolean {
+  if (a.length < STEM_MIN_LENGTH || b.length < STEM_MIN_LENGTH) return false;
+  const stemLen = Math.min(STEM_MIN_LENGTH, a.length, b.length);
+  return a.slice(0, stemLen) === b.slice(0, stemLen);
+}
+
 function tokensMatch(a: string, b: string): boolean {
   const minLen = Math.min(a.length, b.length);
   if (minLen <= 3) {
     return a === b;
   }
-  return a.indexOf(b) !== -1 || b.indexOf(a) !== -1;
+  if (a.indexOf(b) !== -1 || b.indexOf(a) !== -1) {
+    return true;
+  }
+  return stemsMatch(a, b);
 }
 
 function extractName(field: any): string | null {
@@ -43,10 +56,6 @@ function extractName(field: any): string | null {
   return null;
 }
 
-// Wyciaga WSZYSTKIE warianty jezykowe nazwy (np. "Neptune Fountain" i
-// "Fontanna Neptuna" naraz) - Booking.com zwraca tylko jezyki, o ktore
-// jawnie poprosimy w polu "languages" zapytania. Bez tego dostajemy tylko
-// domyslny angielski wariant, przez co polska nazwa nigdy nie pasuje.
 function extractAllNameVariants(field: any): string[] {
   if (!field) return [];
   if (typeof field === "string") return [field];
@@ -56,11 +65,6 @@ function extractAllNameVariants(field: any): string[] {
   return [];
 }
 
-// Szuka punktow orientacyjnych (zabytki, dworce, lotniska, atrakcje) w obrebie
-// KONKRETNEGO miasta (Booking.com wymaga podania city_id - nie ma globalnego
-// wyszukiwania punktow orientacyjnych po calym swiecie na raz).
-// Dopasowanie: tokenowe, bezpieczne dla krotkich slow, PO WSZYSTKICH
-// wariantach jezykowych nazwy naraz.
 export async function searchLandmarks(
   client: BookingApiClient,
   cityId: number,
@@ -71,10 +75,6 @@ export async function searchLandmarks(
   const results: LandmarkSearchResult[] = [];
   const seen = new Set<number>();
 
-  // Zadamy kilku najbardziej prawdopodobnych jezykow naraz - polski (dla
-  // polskich uzytkownikow), angielski (jezyk bazowy Booking.com) i
-  // niemiecki (czesty trzeci jezyk w regionie). Mozna rozszerzyc w razie
-  // potrzeby o kolejne.
   let body: any = { city: cityId, languages: ["en-gb", "pl", "de"] };
 
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -103,8 +103,6 @@ export async function searchLandmarks(
     }
 
     if (!resp.next_page) break;
-    // UWAGA: przy paginacji "page" musi byc jedynym polem (tak jak przy
-    // /accommodations/search) - token juz zawiera oryginalne parametry.
     body = { page: resp.next_page };
   }
 
@@ -114,12 +112,6 @@ export async function searchLandmarks(
   return results;
 }
 
-// Fallback dla adresow/placow, ktorych nie ma w kuratorowanej bazie
-// landmarkow Booking.com (np. "plac Artura Zawiszy" w Warszawie).
-// Uzywa darmowego geokodowania OpenStreetMap Nominatim.
-// UWAGA: Nominatim ma limit ok. 1 zapytanie/sekunde i wymaga naglowka
-// User-Agent - przy wiekszym ruchu produkcyjnym rozwazyc platne API
-// (np. Google Geocoding).
 export async function geocodeAddress(query: string, cityName: string): Promise<LandmarkSearchResult | null> {
   const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
     encodeURIComponent(query + ", " + cityName);
