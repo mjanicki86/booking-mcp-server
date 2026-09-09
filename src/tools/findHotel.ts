@@ -57,10 +57,26 @@ function tokenizeQuery(text: string): string[] {
   return filtered.length > 0 ? filtered : tokens;
 }
 
+// Slowa ktore sa NAJEZYKOWO SPOKREWNIONE (dzielą ten sam lacinski rdzen)
+// ale oznaczaja co innego - "central" i "centre"/"centrum"/"center" dziela
+// identyczny 4-znakowy rdzen "cent", przez co stemsMatch falszywie je
+// utozsamial. POTWIERDZONY BUG (landmarkResolver.ts, 2026-09-09):
+// zapytanie o landmark z "Central" falszywie dopasowalo sie do miejsca
+// z "Centre" w nazwie. TA SAMA funkcja stemsMatch istnieje tutaj
+// (dopasowanie nazw HOTELI), z tym samym ryzykiem - fix musi byc
+// zastosowany w obu miejscach jednoczesnie, bo to zduplikowany kod.
+const STEM_COLLISION_DENYLIST = new Set([
+  "central", "centre", "center", "centrum", "centralny", "centralna", "century",
+  "station", "statistical", "static", "state",
+]);
+
 const STEM_MIN_LENGTH = 4;
 
 function stemsMatch(a: string, b: string): boolean {
   if (a.length < STEM_MIN_LENGTH || b.length < STEM_MIN_LENGTH) return false;
+  if (a !== b && (STEM_COLLISION_DENYLIST.has(a) || STEM_COLLISION_DENYLIST.has(b))) {
+    return false;
+  }
   const stemLen = Math.min(STEM_MIN_LENGTH, a.length, b.length);
   return a.slice(0, stemLen) === b.slice(0, stemLen);
 }
@@ -106,8 +122,6 @@ function addressMatches(hotelAddress: string, addressHint: string): boolean {
   const hintTokens = tokenizeQuery(addressHint);
   if (hintTokens.length === 0 || addressTokens.length === 0) return false;
 
-  // Wystarczy ZE CHOC JEDEN znaczacy token adresu (np. nazwa ulicy) pasuje -
-  // user rzadko poda caly, dokladny adres, czesciej sam fragment/ulice.
   return hintTokens.some((ht) =>
     addressTokens.some((at) => tokensMatch(at, ht))
   );
@@ -313,10 +327,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           };
         }
 
-        // WIECEJ NIZ JEDNO dopasowanie nazwy - jesli user podal address_hint,
-        // probujemy zawezic PRZED zwroceniem multiple_matches do usera.
-        // Jeden dodatkowy, lekki request API (adresy wszystkich kandydatow
-        // naraz), niezaleznie od liczby kandydatow.
         if (matched.length > 1 && params.address_hint) {
           const withAddresses = await fetchAddressesForCandidates(client, matched);
           const addressFiltered = withAddresses.filter((c) =>
@@ -340,10 +350,6 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               structuredContent: output,
             };
           }
-          // Jesli address_hint zawezil do 0 lub nadal >1 - kontynuujemy
-          // do standardowej sciezki multiple_matches ponizej, z pelna
-          // (nie zawezona) lista kandydatow, bo nie mamy pewnosci ktora
-          // podpowiedz adresowa byla trafna.
         }
 
         if (matched.length === 0) {
