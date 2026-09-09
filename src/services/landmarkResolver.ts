@@ -17,6 +17,35 @@ function tokenize(name: string): string[] {
     .filter(Boolean);
 }
 
+// Slowa ktore czesto POWTARZAJA sie w nazwie miasta i w nazwach wielu
+// niepowiazanych landmarkow tego miasta jednoczesnie (np. "Warsaw"
+// pojawia sie w "Warsaw Central Railway Station" ORAZ w "Warsaw Trade
+// Tower" - kompletnie niepowiazane miejsca). Samo trafienie w token
+// nazwy miasta to zbyt slaby sygnal dopasowania - dokladnie ten sam
+// problem juz raz rozwiazany dla dopasowania nazw hoteli (patrz
+// cityExclusions w findHotel.ts). Landmarki nigdy nie mialy tej ochrony.
+function buildCityExclusions(cityName: string, cityNameVariants: string[]): Set<string> {
+  const tokens = new Set<string>();
+  for (const t of tokenize(cityName)) tokens.add(t);
+  for (const variant of cityNameVariants) {
+    for (const t of tokenize(variant)) tokens.add(t);
+  }
+  return tokens;
+}
+
+// Slowa ktore sa NAJEZYKOWO SPOKREWNIONE (dzielą ten sam lacinski rdzen)
+// ale oznaczaja co innego - "central" (przymiotnik: centralny) i
+// "centre"/"centrum"/"center" (rzeczownik: centrum) dziela identyczny
+// 4-znakowy rdzen "cent", przez co stemsMatch falszywie je utozsamial.
+// POTWIERDZONY BUG: zapytanie o "Warsaw Central [Railway] Station"
+// falszywie dopasowalo sie do "Expo 21 Convention CENTRE" wylacznie
+// dzieki temu, ze "central" i "centre" maja wspolny rdzen "cent".
+// Dla tokenow z tej listy WYMAGAMY dokladnej rownosci - stemsMatch nie
+// moze ich mostkowac miedzy soba.
+const STEM_COLLISION_DENYLIST = new Set([
+  "central", "centre", "center", "centrum", "centralny", "centralna", "century",
+]);
+
 // Dla krótkich tokenów (do 3 znaków włącznie) prosty substring jest
 // niebezpieczny - moga wystapic jako PODCIAG zupelnie niepowiazanego,
 // dluzszego slowa (np. "art" wewnatrz "apartment").
@@ -24,14 +53,17 @@ function tokenize(name: string): string[] {
 // Dodatkowo: fallback dla polskiej fleksji (odmiana przez przypadki) -
 // "targi"/"targach", "hotel"/"hotelu" itp. czesto roznia sie tylko
 // koncowka. Pelna lematyzacja wymagalaby slownika NLP - zamiast tego
-// porownujemy "rdzen" (pierwsze min. 4 znaki). POTWIERDZONY BUG: ta sama
-// funkcja w findHotel.ts miala juz ten fix, ale zabraklo go tutaj -
-// "targach" (Poznan International Fair) dawalo 0 dopasowan mimo ze
-// "Targi" jest w nazwie landmarku.
+// porownujemy "rdzen" (pierwsze min. 4 znaki). UWAGA: ten fallback jest
+// swiadomie WYLACZONY dla par tokenow z STEM_COLLISION_DENYLIST, bo
+// dzielenie tylko 4-znakowego rdzenia miedzy jezykowo pokrewnymi, ale
+// znaczeniowo roznymi slowami (central/centre) daje falszywe trafienia.
 const STEM_MIN_LENGTH = 4;
 
 function stemsMatch(a: string, b: string): boolean {
   if (a.length < STEM_MIN_LENGTH || b.length < STEM_MIN_LENGTH) return false;
+  if (a !== b && (STEM_COLLISION_DENYLIST.has(a) || STEM_COLLISION_DENYLIST.has(b))) {
+    return false;
+  }
   const stemLen = Math.min(STEM_MIN_LENGTH, a.length, b.length);
   return a.slice(0, stemLen) === b.slice(0, stemLen);
 }
@@ -65,13 +97,33 @@ function extractAllNameVariants(field: any): string[] {
   return [];
 }
 
+// Szuka punktow orientacyjnych (zabytki, dworce, lotniska, atrakcje) w obrebie
+// KONKRETNEGO miasta.
+//
+// cityName/cityNameVariants: przekazywane po to, by wykluczyc tokeny
+// nazwy miasta z kryteriow dopasowania (patrz buildCityExclusions) -
+// bez tego samo slowo "Warsaw" w zapytaniu falszywie dopasowywalo sie
+// do KAZDEGO landmarku zawierajacego "Warsaw" w nazwie, niezaleznie od
+// tego czy mial cokolwiek wspolnego z faktycznie szukanym miejscem.
 export async function searchLandmarks(
   client: BookingApiClient,
   cityId: number,
   query: string,
-  limit: number
+  limit: number,
+  cityName?: string,
+  cityNameVariants?: string[]
 ): Promise<LandmarkSearchResult[]> {
-  const queryTokens = tokenize(query);
+  const cityExclusions = cityName
+    ? buildCityExclusions(cityName, cityNameVariants ?? [])
+    : new Set<string>();
+
+  const rawQueryTokens = tokenize(query);
+  const queryTokens = rawQueryTokens.filter((t) => !cityExclusions.has(t));
+  // Jesli wykluczenie nazwy miasta zostawiloby zapytanie calkowicie puste
+  // (user zapytal np. tylko o samo "Warsaw"), wracamy do pelnego zestawu -
+  // lepiej dac szanse dopasowania niz od razu zwrocic 0 wynikow.
+  const effectiveQueryTokens = queryTokens.length > 0 ? queryTokens : rawQueryTokens;
+
   const results: LandmarkSearchResult[] = [];
   const seen = new Set<number>();
 
@@ -89,9 +141,9 @@ export async function searchLandmarks(
       if (!displayName || entry.id == null || typeof lat !== "number" || typeof lon !== "number") continue;
 
       const nameTokens = allVariants.flatMap((v) => tokenize(v));
-      if (queryTokens.length === 0 || nameTokens.length === 0) continue;
+      if (effectiveQueryTokens.length === 0 || nameTokens.length === 0) continue;
 
-      const matches = queryTokens.every((qt) =>
+      const matches = effectiveQueryTokens.every((qt) =>
         nameTokens.some((nt) => tokensMatch(nt, qt))
       );
 
@@ -106,7 +158,8 @@ export async function searchLandmarks(
     body = { page: resp.next_page };
   }
 
-  console.error("=== DIAG searchLandmarks: query=\"" + query + "\" -> " + results.length +
+  console.error("=== DIAG searchLandmarks: query=\"" + query + "\" (efektywne tokeny: " +
+    JSON.stringify(effectiveQueryTokens) + ") -> " + results.length +
     " dopasowan: " + JSON.stringify(results.map((r) => r.name)));
 
   return results;

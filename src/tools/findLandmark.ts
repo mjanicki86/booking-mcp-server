@@ -17,6 +17,12 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         "search (e.g. 'within 1km of Fontanna Neptuna', 'near the central station', 'close to the " +
         "Eiffel Tower', or a plain address/square like 'plac Artura Zawiszy') - do NOT invent or guess " +
         "coordinates yourself. " +
+        "REUSE ACROSS TURNS: once you have resolved a landmark to coordinates in this conversation, " +
+        "REMEMBER those coordinates and reuse them directly in booking_search_hotels for follow-up " +
+        "requests about the same place (e.g. changing radius, price, breakfast, or removing a filter) " +
+        "- do NOT call this tool again for the same landmark and force the user to re-disambiguate " +
+        "something they already clarified earlier in the conversation. Only call this tool again if " +
+        "the user names a genuinely different place. " +
         "After getting the result, pass the returned latitude/longitude (and a sensible radius_km) " +
         "into booking_search_hotels instead of a plain city search. " +
         "If status is 'no_match', tell the user the landmark could not be found by that name in that " +
@@ -51,12 +57,16 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
       }
 
       try {
-        const matches = await searchLandmarks(client, cityResult.city_id, params.landmark_name, 10);
+        const matches = await searchLandmarks(
+          client,
+          cityResult.city_id,
+          params.landmark_name,
+          10,
+          cityResult.name,
+          cityResult.name_variants
+        );
 
         if (matches.length === 0) {
-          // Booking.com nie ma tego miejsca w swojej kuratorowanej bazie
-          // landmarkow (np. zwykly adres, plac, ulica) - proba geokodowania
-          // zewnetrznego zanim poddamy sie calkowicie.
           const geocoded = await geocodeAddress(params.landmark_name, cityResult.name);
           if (geocoded) {
             const output = {
