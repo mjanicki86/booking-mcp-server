@@ -76,8 +76,25 @@ async function countHotelsForCity(client: BookingApiClient, cityId: number): Pro
 // WSZYSTKIE dokladne dopasowania nazwy w calym kraju (bez wzgledu na to
 // czy jest ich 1, 2, 5 czy wiecej), a gdy jest ich wiecej niz jedno,
 // sprawdza KAZDE z nich przez probne zapytanie o realna liczbe hoteli i
-// wybiera wariant z NAJWIEKSZA pula. To ogolne zabezpieczenie dziala dla
-// kazdego miasta na swiecie, nie tylko dla przypadkow juz wykrytych.
+// wybiera wariant z NAJWIEKSZA pula.
+//
+// UWAGA - POTWIERDZONY BUG NAPRAWIONY TUTAJ (2026-09-09): poprzednia wersja
+// cache'owala PRZY OKAZJI (incydentalnie) KAZDE miasto napotkane podczas
+// paginacji, NIEZALEZNIE od tego, czy to ono bylo celem danego zapytania.
+// To oznaczalo, ze jesli podczas szukania jakiegokolwiek INNEGO miasta
+// (np. "Warsaw") paginacja przypadkiem przeszla przez strone zawierajaca
+// jeden z duplikatow "Leszno", ten duplikat zostawal zapisany w cache
+// pod kluczem "pl:leszno" metoda "kto pierwszy ten lepszy" - BEZ
+// JAKIEJKOLWIEK weryfikacji czy to wlasciwy wariant, i BEZ ZADNEGO LOGA
+// (bo caching incydentalny nie przechodzil przez logike exactMatches/
+// countHotelsForCity, ktora dziala tylko dla miasta bedacego bezposrednim
+// celem wywolania). Gdy pozniej ktos jawnie pytal o "Leszno", funkcja
+// trafiala w ten zanieczyszczony wpis na samej gorze (cityCache.get) i
+// zwracala go NATYCHMIAST, calkowicie omijajac mechanizm wykrywania
+// duplikatow - stad calkowity brak logow OSTRZEZENIE/DIAG w praktyce,
+// mimo poprawnego kodu tej logiki. FIX: cache'ujemy WYLACZNIE finalny,
+// w pelni zweryfikowany wynik dla miasta bedacego bezposrednim celem
+// zapytania (patrz koniec funkcji) - nigdy miast napotkanych przy okazji.
 export async function resolveCityId(
   client: BookingApiClient,
   cityName: string,
@@ -89,6 +106,8 @@ export async function resolveCityId(
 
   const cached = cityCache.get(cacheKey);
   if (cached) {
+    console.error("=== Miasto z cache: \"" + cityName + "\" -> " + cached.name +
+      " (id=" + cached.city_id + ")");
     return {
       city_id: cached.city_id,
       name: cached.name,
@@ -104,7 +123,9 @@ export async function resolveCityId(
   // pierwszym trafieniu) - to jedyny niezawodny sposob, by wykryc
   // KAZDY mozliwy duplikat nazwy, niezaleznie od tego gdzie w kolejnosci
   // paginacji Booking.com go umiesci. Kosztowniejsze przy pierwszym
-  // zapytaniu o dane miasto, zlagodzone przez cache dla kolejnych zapytan.
+  // zapytaniu o dane miasto, zlagodzone przez cache dla kolejnych zapytan
+  // o TO SAMO miasto (nie dla innych miast napotkanych przy okazji -
+  // patrz komentarz nad funkcja).
   for (let page = 0; page < MAX_PAGES; page++) {
     const resp = await client.post<any>("/common/locations/cities", body);
     const data: any[] = resp.data ?? [];
@@ -114,10 +135,10 @@ export async function resolveCityId(
       if (!name || entry.id == null) continue;
       const variants = extractAllNameVariants(entry.name);
 
-      const key = normCountry + ":" + normalizeText(name);
-      if (!cityCache.has(key)) {
-        cityCache.set(key, { city_id: entry.id, name: name, name_variants: variants });
-      }
+      // CELOWO NIE cache'ujemy tutaj miast innych niz to bedace celem
+      // tego wywolania - patrz duzy komentarz nad funkcja, dlaczego
+      // incydentalne cache'owanie kazdego napotkanego miasta bylo
+      // zrodlem powaznego, cichego bledu z duplikatami nazw miast.
 
       if (normalizeText(name) === normName && !exactMatches.some((m) => m.city_id === entry.id)) {
         exactMatches.push({ city_id: entry.id, name: name, name_variants: variants });
@@ -163,6 +184,9 @@ export async function resolveCityId(
       counts[bestIndex] + " hoteli) sposrod " + exactMatches.length + " duplikatow w bazie.");
   }
 
+  // Cache'ujemy WYLACZNIE ten, w pelni zweryfikowany finalny wynik - dla
+  // miasta bedacego bezposrednim celem TEGO wywolania. To jedyne bezpieczne
+  // miejsce do zapisu w cache w calej tej funkcji.
   const finalKey = normCountry + ":" + normalizeText(chosen.name);
   cityCache.set(finalKey, chosen);
 
@@ -174,7 +198,14 @@ export async function resolveCityId(
   };
 }
 
-// Wyszukiwanie miast po fragmencie nazwy (dla narzedzia booking_search_cities)
+// Wyszukiwanie miast po fragmencie nazwy (dla narzedzia booking_search_cities).
+// UWAGA: ta funkcja CELOWO nadal cache'uje kazde napotkane miasto - jest to
+// bezpieczne w JEJ kontekscie, bo searchCities nigdy nie robi wyboru
+// "najlepszego" wariantu (zwraca WSZYSTKIE pasujace wyniki, nie jeden), wiec
+// nie ma tu ryzyka "cichego" wyboru zlego duplikatu bez logowania - user
+// (lub model) zawsze widzi pelna liste i decyduje sam. Ryzykowne bylo
+// wylacznie robienie tego w resolveCityId, gdzie taki cache podmienia
+// wynik z pominieciem calej logiki wyboru najlepszego wariantu.
 export async function searchCities(
   client: BookingApiClient,
   query: string,
@@ -195,11 +226,6 @@ export async function searchCities(
     for (const entry of data) {
       const name = extractName(entry.name);
       if (!name || entry.id == null) continue;
-
-      const key = normCountry + ":" + normalizeText(name);
-      if (!cityCache.has(key)) {
-        cityCache.set(key, { city_id: entry.id, name: name, name_variants: extractAllNameVariants(entry.name) });
-      }
 
       if (normalizeText(name).indexOf(normQuery) !== -1 && !seen.has(entry.id)) {
         seen.add(entry.id);
