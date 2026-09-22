@@ -7,6 +7,33 @@ import {
 } from "../types.js";
 import { config } from "../config.js";
 
+// === OCENY GOSCI (2026-09-22) ===
+// Oceny gosci NIE przychodza ani z /accommodations/search, ani z
+// /accommodations/details - sa pod osobnym endpointem /accommodations/reviews/scores.
+// Dopoki ich nie pobieralismy, review_score kazdego hotelu bylo null, co dawalo
+// trzy ciche bledy naraz: sort_by=review_score nie zmienial kolejnosci (PRZED==PO
+// w DIAG), filtr min_review_score nie odrzucal niczego, a model - pozbawiony danych,
+// ktore opis narzedzia mu obiecuje - ZMYSLAL oceny w odpowiedziach dla usera
+// (potwierdzony przypadek z produkcji 2026-09-22: "9,2/10", "9,1/10" dla hoteli,
+// dla ktorych nie bylo zadnych danych).
+const REVIEWS_ENDPOINT = "/accommodations/reviews/scores";
+
+// Oceny zmieniaja sie w skali dni, nie minut, wiec 24h TTL jest bezpieczne
+// merytorycznie i praktycznie kasuje narzut na API: konsultant robi kaskade
+// (ten sam zbior hoteli, zmieniany filtr albo sortowanie w kolejnych turach),
+// wiec tury 2..N trafiaja w cache. Klucz to numeryczne accommodation_id, wiec
+// nie powtarza sie tu problem zatrucia cache'u z cityResolver.ts - identyfikator
+// jest jednoznaczny i nie wymaga deduplikacji wariantow nazw.
+const REVIEW_SCORE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface CachedReviewScore {
+  score?: number;
+  count?: number;
+  fetchedAt: number;
+}
+
+const reviewScoreCache = new Map<number, CachedReviewScore>();
+
 export class BookingApiClient {
   private readonly apiKey: string;
   private readonly affiliateId: string;
@@ -58,7 +85,63 @@ export class BookingApiClient {
     return JSON.parse(responseText) as T;
   }
 
-  async searchAccommodations(request: AccommodationSearchRequest): Promise<SearchResult> {
+  // Zwraca slownik id -> {score, count}. Pyta API tylko o te ID, ktorych nie ma
+  // w cache lub ktorych wpis sie przedawnil. Rzuca wyjatkiem tylko wtedy, gdy
+  // realnie probowala odpytac API i sie nie udalo - wywolujacy decyduje, czy to
+  // blad krytyczny (patrz reviews_fetch_failed).
+  private async fetchReviewScores(
+    ids: number[]
+  ): Promise<{ byId: Record<number, CachedReviewScore>; failed: boolean }> {
+    const byId: Record<number, CachedReviewScore> = {};
+    const now = Date.now();
+    const missing: number[] = [];
+
+    for (const id of ids) {
+      const cached = reviewScoreCache.get(id);
+      if (cached && now - cached.fetchedAt < REVIEW_SCORE_CACHE_TTL_MS) {
+        byId[id] = cached;
+      } else {
+        missing.push(id);
+      }
+    }
+
+    if (missing.length === 0) {
+      console.error("=== DIAG reviews: wszystkie " + ids.length +
+        " ocen z cache, zero wywolan API.");
+      return { byId: byId, failed: false };
+    }
+
+    console.error("=== DIAG reviews: " + (ids.length - missing.length) + " z cache, " +
+      missing.length + " do pobrania z API.");
+
+    try {
+      const raw = await this.post<any>(REVIEWS_ENDPOINT, { accommodations: missing });
+      const data: any[] = raw.data ?? raw.result ?? [];
+      let withScore = 0;
+      for (const r of data) {
+        if (r?.id == null) continue;
+        const entry: CachedReviewScore = {
+          score: typeof r.score === "number" ? r.score : undefined,
+          count: typeof r.number_of_reviews === "number" ? r.number_of_reviews : undefined,
+          fetchedAt: now,
+        };
+        reviewScoreCache.set(r.id, entry);
+        byId[r.id] = entry;
+        if (entry.score != null) withScore++;
+      }
+      console.error("=== DIAG reviews: API zwrocilo " + data.length + " wpisow, " +
+        withScore + " z ocena. W cache lacznie: " + reviewScoreCache.size + " obiektow.");
+      return { byId: byId, failed: false };
+    } catch (err) {
+      console.error("=== Nie udalo sie pobrac ocen gosci (" + REVIEWS_ENDPOINT + "): " +
+        (err instanceof Error ? err.message : String(err)));
+      return { byId: byId, failed: true };
+    }
+  }
+
+  async searchAccommodations(
+    request: AccommodationSearchRequest
+  ): Promise<SearchResult & { reviews_fetch_failed?: boolean }> {
     const raw = await this.post<any>("/accommodations/search", request);
     const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
 
@@ -80,6 +163,9 @@ export class BookingApiClient {
     // pokoju) - Booking.com zwraca to w meal_prices.breakfast, dostepne
     // przy okazji tego samego wywolania /accommodations/details co facilities.
     const breakfastPriceById: Record<number, number> = {};
+    // Oceny gosci - z osobnego endpointu, nie z /details.
+    let reviewById: Record<number, CachedReviewScore> = {};
+    let reviewsFetchFailed = false;
 
     // WAZNE: jesli to zapytanie o facilities zawiedzie (timeout, rate limit,
     // chwilowy blad sieci), facilitiesById zostaje puste dla WSZYSTKICH
@@ -115,6 +201,12 @@ export class BookingApiClient {
         }
       }
 
+      // Oceny pobieramy rownolegle z details - to dwa niezalezne endpointy,
+      // wiec nie ma powodu czekac na jeden przed drugim.
+      const reviews = await this.fetchReviewScores(ids);
+      reviewById = reviews.byId;
+      reviewsFetchFailed = reviews.failed;
+
       if (details) {
         const detailsData: any[] = details.data ?? details.result ?? [];
         for (const d of detailsData) {
@@ -145,12 +237,13 @@ export class BookingApiClient {
 
     return {
       hotels: rawHotels.map((h: any) =>
-        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById)
+        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById, reviewById)
       ),
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
       next_page: nextPage,
       facilities_fetch_failed: facilitiesFetchFailed,
+      reviews_fetch_failed: reviewsFetchFailed,
     };
   }
 }
@@ -223,7 +316,8 @@ function normalizeHotel(
   coordsById: Record<number, { latitude: number; longitude: number }>,
   facilitiesById: Record<number, number[]>,
   accTypeById: Record<number, number>,
-  breakfastPriceById: Record<number, number>
+  breakfastPriceById: Record<number, number>,
+  reviewById: Record<number, { score?: number; count?: number }>
 ): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
@@ -253,8 +347,10 @@ function normalizeHotel(
     hotel_id: hotelId,
     name: name,
     star_rating: raw.class ?? raw.star_rating,
-    review_score: raw.review_score,
-    review_count: raw.review_nr ?? raw.review_count,
+    // Zrodlem prawdy jest /accommodations/reviews/scores; raw.* zostaje jako
+    // fallback, bo starsze/inne ksztalty odpowiedzi czasem to pole zawieraja.
+    review_score: reviewById[hotelId]?.score ?? raw.review_score,
+    review_count: reviewById[hotelId]?.count ?? raw.review_nr ?? raw.review_count,
     review_score_word: raw.review_score_word,
     price: priceAmount != null ? {
       amount: priceAmount,
