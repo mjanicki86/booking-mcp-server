@@ -163,6 +163,15 @@ export class BookingApiClient {
     // pokoju) - Booking.com zwraca to w meal_prices.breakfast, dostepne
     // przy okazji tego samego wywolania /accommodations/details co facilities.
     const breakfastPriceById: Record<number, number> = {};
+    // GWIAZDKI (2026-10-21): /accommodations/search NIE zwraca gwiazdek (tylko
+    // id, price, products, url), wiec star_rating z raw.class bylo zawsze puste,
+    // a filtr min_stars w hotelSearch.ts odrzucal WSZYSTKIE hotele - prod:
+    // "zaden z 91 obiektow nie ma 4 gwiazdek" przy zapytaniu o 4* z filtrem
+    // rating.stars=[4] wyslanym do API. Gwiazdki sa w rating.stars w
+    // /accommodations/details, ktore i tak wolamy dla kazdego wyniku.
+    // Przy okazji rating.review_score / number_of_reviews jako FALLBACK, gdy
+    // /accommodations/reviews/scores nie zwroci oceny dla danego obiektu.
+    const detailsRatingById: Record<number, { stars?: number; review_score?: number; review_count?: number }> = {};
     // Oceny gosci - z osobnego endpointu, nie z /details.
     let reviewById: Record<number, CachedReviewScore> = {};
     let reviewsFetchFailed = false;
@@ -227,17 +236,27 @@ export class BookingApiClient {
           if (d.id != null && typeof d.accommodation_type === "number") {
             accTypeById[d.id] = d.accommodation_type;
           }
+          if (d.id != null && d.rating && typeof d.rating === "object") {
+            detailsRatingById[d.id] = {
+              stars: typeof d.rating.stars === "number" ? d.rating.stars : undefined,
+              review_score: typeof d.rating.review_score === "number" ? d.rating.review_score : undefined,
+              review_count: typeof d.rating.number_of_reviews === "number" ? d.rating.number_of_reviews : undefined,
+            };
+          }
           const breakfastPrice = d.meal_prices?.breakfast;
           if (d.id != null && typeof breakfastPrice === "number") {
             breakfastPriceById[d.id] = breakfastPrice;
           }
         }
       }
+
+      const withStars = Object.values(detailsRatingById).filter((r) => r.stars != null).length;
+      console.error("=== DIAG stars: gwiazdki z /details dla " + withStars + " z " + ids.length + " hoteli.");
     }
 
     return {
       hotels: rawHotels.map((h: any) =>
-        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById, reviewById)
+        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById, reviewById, detailsRatingById)
       ),
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
@@ -317,7 +336,8 @@ function normalizeHotel(
   facilitiesById: Record<number, number[]>,
   accTypeById: Record<number, number>,
   breakfastPriceById: Record<number, number>,
-  reviewById: Record<number, { score?: number; count?: number }>
+  reviewById: Record<number, { score?: number; count?: number }>,
+  detailsRatingById: Record<number, { stars?: number; review_score?: number; review_count?: number }>
 ): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
@@ -346,11 +366,12 @@ function normalizeHotel(
   return {
     hotel_id: hotelId,
     name: name,
-    star_rating: raw.class ?? raw.star_rating,
-    // Zrodlem prawdy jest /accommodations/reviews/scores; raw.* zostaje jako
-    // fallback, bo starsze/inne ksztalty odpowiedzi czasem to pole zawieraja.
-    review_score: reviewById[hotelId]?.score ?? raw.review_score,
-    review_count: reviewById[hotelId]?.count ?? raw.review_nr ?? raw.review_count,
+    // Gwiazdki: rating.stars z /details (search ich nie zwraca); raw.* jako fallback.
+    star_rating: detailsRatingById[hotelId]?.stars ?? raw.class ?? raw.star_rating,
+    // Ocena: zrodlem prawdy jest /accommodations/reviews/scores; potem
+    // rating.review_score z /details; na koncu raw.* (inne ksztalty odpowiedzi).
+    review_score: reviewById[hotelId]?.score ?? detailsRatingById[hotelId]?.review_score ?? raw.review_score,
+    review_count: reviewById[hotelId]?.count ?? detailsRatingById[hotelId]?.review_count ?? raw.review_nr ?? raw.review_count,
     review_score_word: raw.review_score_word,
     price: priceAmount != null ? {
       amount: priceAmount,
