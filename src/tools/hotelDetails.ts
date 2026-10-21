@@ -257,7 +257,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - pass it to the user; never say 'no information about parking' if parking_summary or facilities mention parking. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - pass it to the user; never say 'no information about parking' if parking_summary or facilities mention parking. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. LINK: EVERY answer based on this tool MUST end with a clickable link to the property page on Booking.com, taken from the 'url' field (e.g. '[Nazwa hotelu na Booking.com](url)'), placed right before the 'Źródło' line - consultants use it to verify the information. Never omit it, even for one-line answers (parking, reception hours, etc.). Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -410,6 +410,9 @@ export function registerHotelDetailsTool(
           payment_methods: paymentMethods,
           pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
           url: hotel.url ?? null,
+          display_instruction: hotel.url
+            ? "End your answer with this link to the property page: [" + name + " na Booking.com](" + hotel.url + ")"
+            : "No property page link available from the API for this hotel.",
           data_source: "Booking.com API",
         };
 
