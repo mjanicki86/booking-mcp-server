@@ -26,10 +26,19 @@ type HotelDetailsInput = z.infer<typeof HotelDetailsInputSchema>;
 // ---------------------------------------------------------------------------
 
 const CONSTANTS_TTL_MS = 24 * 60 * 60 * 1000;
-let facilityNamesCache: { fetchedAt: number; names: Map<number, string> } | null = null;
-let facilityNamesInFlight: Promise<Map<number, string> | null> | null = null;
+// Udogodnienia OBIEKTU i POKOJU maja osobne, nakladajace sie numeracje
+// (id 1 obiektu != id 1 pokoju) - dlatego dwie osobne mapy.
+interface FacilityNames {
+  accommodation: Map<number, string>;
+  room: Map<number, string>;
+}
 
-async function loadFacilityNames(apiKey: string, affiliateId: string): Promise<Map<number, string> | null> {
+let facilityNamesCache: { fetchedAt: number; names: FacilityNames } | null = null;
+let facilityNamesInFlight: Promise<FacilityNames | null> | null = null;
+
+// Wywolywane tez przy starcie serwera (index.ts), zeby pierwsze zapytanie
+// konsultanta nie czekalo na pobranie slownika.
+export async function loadFacilityNames(apiKey: string, affiliateId: string): Promise<FacilityNames | null> {
   if (facilityNamesCache && Date.now() - facilityNamesCache.fetchedAt < CONSTANTS_TTL_MS) {
     return facilityNamesCache.names;
   }
@@ -54,17 +63,22 @@ async function loadFacilityNames(apiKey: string, affiliateId: string): Promise<M
       }
       const raw = JSON.parse(text);
       const data = raw.data ?? {};
-      const names = new Map<number, string>();
-      for (const list of [data.accommodation_facilities, data.room_facilities]) {
-        if (!Array.isArray(list)) continue;
+      const toMap = (list: any): Map<number, string> => {
+        const m = new Map<number, string>();
+        if (!Array.isArray(list)) return m;
         for (const f of list) {
           const n = f?.name?.["pl"] ?? f?.name?.["en-gb"] ?? null;
-          // Pierwsze wystapienie wygrywa (accommodation_facilities przed room_facilities)
-          if (f?.id != null && typeof n === "string" && !names.has(f.id)) names.set(f.id, n);
+          if (f?.id != null && typeof n === "string") m.set(f.id, n);
         }
-      }
-      console.error("=== constants: zaladowano " + names.size + " nazw udogodnien");
-      if (names.size > 0) {
+        return m;
+      };
+      const names: FacilityNames = {
+        accommodation: toMap(data.accommodation_facilities),
+        room: toMap(data.room_facilities),
+      };
+      console.error("=== constants: zaladowano " + names.accommodation.size + " nazw udogodnien obiektu, " +
+        names.room.size + " nazw udogodnien pokoi");
+      if (names.accommodation.size > 0) {
         facilityNamesCache = { fetchedAt: Date.now(), names };
         return names;
       }
@@ -147,6 +161,18 @@ const CHARGE_MODE_NAMES: Record<string, string> = {
   per_stay: "platny za caly pobyt",
 };
 
+const PAYMENT_TIMING_NAMES: Record<string, string> = {
+  pay_at_the_property: "platnosc na miejscu",
+  pay_online_later: "platnosc online pozniej",
+  pay_online_now: "platnosc online od razu",
+};
+
+const PETS_ALLOWED_NAMES: Record<string, string> = {
+  yes: "tak",
+  no: "nie",
+  upon_request: "na zapytanie",
+};
+
 const PARKING_TYPE_NAMES: Record<string, string> = {
   private: "prywatny",
   public: "publiczny",
@@ -197,11 +223,22 @@ function extractText(field: any): string | null {
   return null;
 }
 
-// Zamienia wpis udogodnienia (numer + atrybuty) na czytelny tekst,
-// np. {id: 2, attributes: ["paid"]} -> "Parking (platne)"
-function facilityToText(f: any, names: Map<number, string> | null): string | null {
+// Zamienia wpis udogodnienia na czytelny tekst. Obiekt: {id: 2, attributes:
+// ["paid"]} -> "Parking (platne)". Pokoje: API zwraca SAME LICZBY
+// ("facilities":[1,4,6,...]) - wczesniej dawalo to pusta liste udogodnien pokoju.
+// fallbackNames: reczny slownik - tylko dla udogodnien obiektu.
+function facilityToText(
+  rawF: any,
+  names: Map<number, string> | null,
+  fallbackNames: Record<number, string> | null
+): string | null {
+  const f = typeof rawF === "number" ? { id: rawF } : rawF;
+  if (!f) return null;
   const directName = extractText(f.name) ?? extractText(f.facility_name);
-  const baseName = directName ?? (f.id != null ? names?.get(f.id) : undefined) ?? FACILITY_NAMES[f.id] ?? null;
+  const baseName = directName ??
+    (f.id != null ? names?.get(f.id) : undefined) ??
+    (fallbackNames && f.id != null ? fallbackNames[f.id] : undefined) ??
+    null;
   if (!baseName) {
     return f.id != null ? "udogodnienie #" + f.id : null;
   }
@@ -257,7 +294,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - pass it to the user; never say 'no information about parking' if parking_summary or facilities mention parking. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. LINK: EVERY answer based on this tool MUST end with a clickable link to the property page on Booking.com, taken from the 'url' field (e.g. '[Nazwa hotelu na Booking.com](url)'), placed right before the 'Źródło' line - consultants use it to verify the information. Never omit it, even for one-line answers (parking, reception hours, etc.). Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - state it ONCE in your own words, do not repeat it or quote it as a separate 'Opis'; never say 'no information about parking' if parking_summary or facilities mention parking. CONTACT: if the user asks how to contact the hotel or something must be confirmed with the hotel, give 'contact' (telephone/email). PETS: use the 'pets' field. NO GUESSING: state only facts present in this response - do not infer extra facts (e.g. a 24-hour front desk does NOT mean check-in at any time: check-in hours are in checkin_from/checkin_until); if a field is null, say the API does not provide it. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. LINK: EVERY answer based on this tool MUST end with a clickable link to the property page on Booking.com, taken from the 'url' field (e.g. '[Nazwa hotelu na Booking.com](url)'), placed right before the 'Źródło' line - consultants use it to verify the information. Never omit it, even for one-line answers (parking, reception hours, etc.). Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -330,6 +367,8 @@ export function registerHotelDetailsTool(
         const description = rawDescription ? sanitizeForOrchestrator(rawDescription, 800) : null;
         const importantInfo = extractText(hotel.description?.important_information) ?? null;
         const checkinFrom = hotel.checkin_checkout_times?.checkin_from ?? null;
+        const checkinTo = hotel.checkin_checkout_times?.checkin_to ?? null;
+        const checkoutFrom = hotel.checkin_checkout_times?.checkout_from ?? null;
         const checkoutTo = hotel.checkin_checkout_times?.checkout_to ?? null;
 
         const facilityNames = await facilityNamesPromise;
@@ -337,7 +376,7 @@ export function registerHotelDetailsTool(
         const facilities: string[] = [];
         if (Array.isArray(hotel.facilities)) {
           for (const f of hotel.facilities) {
-            const ftext = facilityToText(f, facilityNames);
+            const ftext = facilityToText(f, facilityNames?.accommodation ?? null, FACILITY_NAMES);
             if (ftext) facilities.push(ftext);
           }
         }
@@ -366,8 +405,9 @@ export function registerHotelDetailsTool(
             const roomFacilities: string[] = [];
             if (Array.isArray(room.facilities)) {
               for (const f of room.facilities) {
-                const ftext = facilityToText(f, facilityNames);
-                if (ftext) roomFacilities.push(ftext);
+                const ftext = facilityToText(f, facilityNames?.room ?? null, null);
+                // Bez slownika pokoi nie pokazujemy "udogodnienie #N" - nic nie mowi.
+                if (ftext && !ftext.startsWith("udogodnienie #")) roomFacilities.push(ftext);
               }
             }
             rooms.push({
@@ -378,13 +418,32 @@ export function registerHotelDetailsTool(
           }
         }
 
-        const paymentMethods: string[] = [];
-        if (Array.isArray(hotel.payment_methods)) {
-          for (const p of hotel.payment_methods) {
-            const pname = extractText(p.name);
-            if (pname) paymentMethods.push(pname);
-          }
-        }
+        // Platnosci: API 3.1 zwraca je w hotel.payment (wczesniej czytalismy
+        // nieistniejace payment_methods - pole bylo zawsze puste).
+        const pay = hotel.payment ?? null;
+        const payment = pay ? {
+          cash_accepted: pay.methods?.cash ?? null,
+          cards_accepted: Array.isArray(pay.methods?.cards) ? pay.methods.cards.length > 0 : null,
+          cvc_required: pay.cvc_required ?? null,
+          payment_timings: Array.isArray(pay.timings)
+            ? pay.timings.map((t: string) => PAYMENT_TIMING_NAMES[t] ?? t)
+            : null,
+        } : null;
+
+        // Zwierzeta: API 3.1 zwraca je w hotel.policies.pets (wczesniej
+        // czytalismy nieistniejace hotel.pets - zawsze null).
+        const petsRaw = hotel.policies?.pets ?? null;
+        const pets = petsRaw ? {
+          allowed: PETS_ALLOWED_NAMES[petsRaw.allowed] ?? petsRaw.allowed ?? null,
+          charge: petsRaw.charge_mode ? (CHARGE_MODE_NAMES[petsRaw.charge_mode] ?? petsRaw.charge_mode) : null,
+        } : null;
+
+        // Kontakt do obiektu (dane "trader" z opisu) - konsultanci potrzebuja
+        // telefonu/maila recepcji, np. do potwierdzenia miejsca parkingowego.
+        const trader = hotel.description?.trader ?? null;
+        const contact = trader && (trader.telephone || trader.email)
+          ? { telephone: trader.telephone ?? null, email: trader.email ?? null }
+          : null;
 
         const address = hotel.address
           ? ((hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")).trim()
@@ -398,7 +457,10 @@ export function registerHotelDetailsTool(
           review_score: hotel.rating?.review_score ?? null,
           review_count: hotel.rating?.number_of_reviews ?? null,
           checkin_from: checkinFrom,
+          checkin_until: checkinTo,
+          checkout_from: checkoutFrom,
           checkout_until: checkoutTo,
+          contact: contact,
           description: description,
           important_information: importantInfo ?? null,
           facilities: facilities,
@@ -407,8 +469,8 @@ export function registerHotelDetailsTool(
           wifi_details: wifiDetails,
           meal_prices: mealPrices,
           rooms: rooms,
-          payment_methods: paymentMethods,
-          pets_allowed: hotel.pets ?? hotel.pet_policy ?? null,
+          payment: payment,
+          pets: pets,
           url: hotel.url ?? null,
           display_instruction: hotel.url
             ? "End your answer with this link to the property page: [" + name + " na Booking.com](" + hotel.url + ")"

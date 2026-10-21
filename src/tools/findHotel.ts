@@ -179,6 +179,26 @@ async function loadCityInventory(client: BookingApiClient, cityId: number): Prom
   }
 }
 
+// Wstepne zaladowanie miasta (cache miasta w cityResolver + inwentarz hoteli)
+// - wolane przy starcie serwera dla najczesciej uzywanych miast, zeby
+// pierwszy konsultant po deployu/restarcie nie czekal kilku sekund.
+export async function prewarmCity(client: BookingApiClient, city: string, country: string): Promise<void> {
+  const started = Date.now();
+  try {
+    const cityResult = await resolveCityId(client, city, country);
+    if (!cityResult) {
+      console.error("=== PREWARM: nie znaleziono miasta " + city + " (" + country + ")");
+      return;
+    }
+    const entries = await loadCityInventory(client, cityResult.city_id);
+    console.error("=== PREWARM: " + city + " gotowe (" + entries.length + " obiektow, " +
+      (Date.now() - started) + " ms)");
+  } catch (err) {
+    console.error("=== PREWARM: blad dla " + city + " (pomijam): " +
+      (err instanceof Error ? err.message : String(err)));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DOPASOWANIE NAZW (bez zmian w logice tokenow - patrz historia stemsMatch)
 // ---------------------------------------------------------------------------

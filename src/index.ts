@@ -6,8 +6,8 @@ import { config } from "./config.js";
 import { BookingApiClient } from "./services/bookingClient.js";
 import { registerHotelSearchTool } from "./tools/hotelSearch.js";
 import { registerSearchCitiesTool } from "./tools/listCities.js";
-import { registerHotelDetailsTool } from "./tools/hotelDetails.js";
-import { registerFindHotelTool } from "./tools/findHotel.js";
+import { registerHotelDetailsTool, loadFacilityNames } from "./tools/hotelDetails.js";
+import { registerFindHotelTool, prewarmCity } from "./tools/findHotel.js";
 import { registerFindLandmarkTool } from "./tools/findLandmark.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
@@ -126,6 +126,36 @@ app.delete("/mcp", (_req: Request, res: Response) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// PREWARM: po starcie ladujemy w tle slownik udogodnien oraz miasta i listy
+// hoteli dla najczesciej uzywanych miast. Bez tego pierwszy konsultant po
+// kazdym deployu/restarcie czekal dodatkowe sekundy (2026-10-21: samo
+// rozwiazanie "Bialystok" ~2 s, lista Gdanska ~2 s). Miasta po kolei, zeby
+// nie obciazac API naraz; serwer odpowiada normalnie w trakcie.
+// Lista do edycji: PREWARM_CITIES w zmiennych srodowiskowych, format
+// "Warsaw:pl,Krakow:pl" - jesli brak, uzywamy domyslnej.
+// ---------------------------------------------------------------------------
+const DEFAULT_PREWARM_CITIES = "Warsaw:pl,Krakow:pl,Gdansk:pl,Wroclaw:pl,Poznan:pl,Katowice:pl,Lodz:pl";
+
+async function prewarm(): Promise<void> {
+  const started = Date.now();
+  const client = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
+  await loadFacilityNames(config.bookingApiKey, config.bookingAffiliateId);
+
+  const list = (process.env.PREWARM_CITIES ?? DEFAULT_PREWARM_CITIES)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const item of list) {
+    const [city, country] = item.split(":");
+    if (city && country) await prewarmCity(client, city, country);
+  }
+  console.error("=== PREWARM: zakonczony w " + (Date.now() - started) + " ms ===");
+}
+
 app.listen(PORT, () => {
   console.error("booking-mcp-server running on http://localhost:" + PORT + "/mcp");
+  prewarm().catch((err) => {
+    console.error("=== PREWARM: blad (serwer dziala dalej): " + (err instanceof Error ? err.message : String(err)));
+  });
 });
