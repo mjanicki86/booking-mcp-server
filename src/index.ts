@@ -12,19 +12,51 @@ import { registerFindLandmarkTool } from "./tools/findLandmark.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
-console.error("=== booking-mcp-server starting ===");
+console.error("=== booking-mcp-server starting (stateless) ===");
 console.error("=== Booking API URL: " + config.bookingApiBaseUrl + " ===");
 
 const app = express();
 app.use(express.json());
 
-const transports = new Map<string, StreamableHTTPServerTransport>();
-
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", server: "booking-mcp-server" });
 });
 
+// ---------------------------------------------------------------------------
+// TRYB BEZSTANOWY (stateless)
+//
+// POPRZEDNIO: sesje MCP byly trzymane w pamieci procesu (Map transports).
+// Po kazdym deployu/restarcie kontenera mapa byla pusta, a Copilot Studio
+// (kanal Teams) dalej wysylal stary naglowek mcp-session-id. Serwer tworzyl
+// wtedy nowy, NIEZAINICJALIZOWANY transport i SDK po cichu odrzucal
+// tools/call (400 "Server not initialized") - w logach bylo tylko "Body",
+// a agent odpowiadal "API nie zwrocilo danych". Potwierdzone 2026-10-21 na
+// booking-mcp-dev--0000069 (Trio Bialystok, id 13/14/15 bez initialize).
+//
+// TERAZ: kazde zadanie dostaje swiezy McpServer + transport bez sesji
+// (sessionIdGenerator: undefined). Kazdy tools/call dziala niezaleznie od
+// tego, czy klient wczesniej wyslal initialize do TEGO procesu - restart,
+// deploy, skalowanie na wiele replik nie zrywaja rozmow.
+//
+// Cache (miasta, inwentarz hoteli, nazwy udogodnien) zyja na poziomie
+// modulow, wiec NIE sa tracone miedzy zadaniami.
+// ---------------------------------------------------------------------------
+
+function buildServer(): McpServer {
+  const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
+  const apiClient = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
+
+  registerHotelSearchTool(server, apiClient);
+  registerSearchCitiesTool(server, apiClient);
+  registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
+  registerFindHotelTool(server, apiClient);
+  registerFindLandmarkTool(server, apiClient);
+
+  return server;
+}
+
 app.post("/mcp", async (req: Request, res: Response) => {
+  const started = Date.now();
   console.error("=== POST /mcp received ===");
   console.error("Body:", JSON.stringify(req.body));
 
@@ -40,69 +72,58 @@ app.post("/mcp", async (req: Request, res: Response) => {
   req.headers["accept"] = "application/json, text/event-stream";
   req.headers["content-type"] = "application/json";
 
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const method = typeof body.method === "string" ? body.method : "?";
+  const toolName = method === "tools/call" ? (body.params?.name ?? "?") : null;
+
+  // Kazde zadanie konczy sie linia ze statusem HTTP i czasem - wczesniej
+  // odrzucone zadania nie zostawialy w logach zadnego sladu.
+  res.on("finish", () => {
+    console.error("=== MCP " + method + (toolName ? " (" + toolName + ")" : "") +
+      " -> HTTP " + res.statusCode + ", " + (Date.now() - started) + " ms ===");
+  });
+
+  const server = buildServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  res.on("close", () => {
+    transport.close().catch(() => undefined);
+    server.close().catch(() => undefined);
+  });
 
   try {
-    let transport: StreamableHTTPServerTransport;
-
-    if (sessionId && transports.has(sessionId)) {
-      transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
-    } else {
-      const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
-      const apiClient = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
-
-      registerHotelSearchTool(server, apiClient);
-      registerSearchCitiesTool(server, apiClient);
-      registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
-      registerFindHotelTool(server, apiClient);
-      registerFindLandmarkTool(server, apiClient);
-
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => crypto.randomUUID(),
-        enableJsonResponse: true,
-      });
-
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          transports.delete(transport.sessionId);
-        }
-      };
-
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-
-      if (transport.sessionId) {
-        transports.set(transport.sessionId, transport);
-        console.error("=== Session created: " + transport.sessionId + " ===");
-      }
-    }
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error("=== ERROR: " + (err instanceof Error ? err.stack : String(err)));
     if (!res.headersSent) {
-      res.status(500).json({ error: "Internal server error" });
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: body.id ?? null,
+      });
     }
   }
 });
 
-app.get("/mcp", async (req: Request, res: Response) => {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  if (!sessionId || !transports.has(sessionId)) {
-    res.status(400).json({ error: "Invalid or missing session ID" });
-    return;
-  }
-  await transports.get(sessionId)!.handleRequest(req, res);
+// W trybie bezstanowym nie ma strumienia SSE (GET) ani sesji do zamkniecia
+// (DELETE) - zgodnie ze specyfikacja MCP odpowiadamy 405.
+app.get("/mcp", (_req: Request, res: Response) => {
+  res.status(405).set("Allow", "POST").json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed (stateless server)" },
+    id: null,
+  });
 });
 
-app.delete("/mcp", async (req: Request, res: Response) => {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
-    transports.delete(sessionId);
-  } else {
-    res.status(404).json({ error: "Session not found" });
-  }
+app.delete("/mcp", (_req: Request, res: Response) => {
+  res.status(405).set("Allow", "POST").json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed (stateless server)" },
+    id: null,
+  });
 });
 
 app.listen(PORT, () => {
