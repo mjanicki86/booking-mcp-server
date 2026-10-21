@@ -34,6 +34,16 @@ interface CachedReviewScore {
 
 const reviewScoreCache = new Map<number, CachedReviewScore>();
 
+// 2026-10-21: /accommodations/reviews/scores zaczal zwracac 403 Forbidden
+// (brak uprawnien dla naszego klucza/affiliate - wczesniej dzialal). Kazde
+// wyszukiwanie tracilo na nim czas, a hotelSearch blokowal filtr ocen.
+// Po 401/403 wylaczamy ten endpoint na REVIEWS_DISABLE_MS i korzystamy
+// z rating.review_score z /accommodations/details (fallback w
+// searchAccommodations). Po tym czasie probujemy ponownie - jesli Booking
+// przywroci dostep, wrocimy do niego automatycznie.
+const REVIEWS_DISABLE_MS = 60 * 60 * 1000;
+let reviewsDisabledUntil = 0;
+
 export class BookingApiClient {
   private readonly apiKey: string;
   private readonly affiliateId: string;
@@ -111,6 +121,12 @@ export class BookingApiClient {
       return { byId: byId, failed: false };
     }
 
+    if (Date.now() < reviewsDisabledUntil) {
+      console.error("=== DIAG reviews: endpoint ocen wylaczony po 403 (do " +
+        new Date(reviewsDisabledUntil).toISOString() + ") - pomijam wywolanie.");
+      return { byId: byId, failed: true };
+    }
+
     console.error("=== DIAG reviews: " + (ids.length - missing.length) + " z cache, " +
       missing.length + " do pobrania z API.");
 
@@ -135,6 +151,12 @@ export class BookingApiClient {
     } catch (err) {
       console.error("=== Nie udalo sie pobrac ocen gosci (" + REVIEWS_ENDPOINT + "): " +
         (err instanceof Error ? err.message : String(err)));
+      const status = err instanceof BookingApiRequestError ? err.apiError.status : null;
+      if (status === 401 || status === 403) {
+        reviewsDisabledUntil = Date.now() + REVIEWS_DISABLE_MS;
+        console.error("=== Endpoint ocen zwraca " + status + " - wylaczam go na " +
+          (REVIEWS_DISABLE_MS / 60000) + " min, oceny z /accommodations/details.");
+      }
       return { byId: byId, failed: true };
     }
   }
@@ -252,6 +274,18 @@ export class BookingApiClient {
 
       const withStars = Object.values(detailsRatingById).filter((r) => r.stars != null).length;
       console.error("=== DIAG stars: gwiazdki z /details dla " + withStars + " z " + ids.length + " hoteli.");
+
+      // FALLBACK OCEN (2026-10-21): gdy /accommodations/reviews/scores zawiedzie,
+      // a /details przyszlo poprawnie, mamy oceny z rating.review_score - wtedy
+      // NIE zglaszamy reviews_fetch_failed. Wczesniej sama awaria endpointu ocen
+      // blokowala cale wyszukiwanie z min_review_score ("nie udalo sie pobrac
+      // ocen gosci", Krakow 3* ocena 8+), mimo ze dane byly pod reka.
+      if (reviewsFetchFailed && details) {
+        const withScore = Object.values(detailsRatingById).filter((r) => r.review_score != null).length;
+        console.error("=== DIAG reviews: endpoint ocen zawiodl - uzywam rating.review_score z /details (" +
+          withScore + " z " + ids.length + " hoteli ma ocene).");
+        reviewsFetchFailed = false;
+      }
     }
 
     return {
