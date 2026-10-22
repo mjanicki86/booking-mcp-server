@@ -25,6 +25,11 @@ export interface StoredResultSet {
   page_size: number;
   meta: Record<string, unknown>; // location, checkin, checkout, active_search_state, notatki itd.
   createdAt: number;
+  // Ostatnio wydana strona (1 = pierwsza paczka z booking_search_hotels).
+  // Serwer sam wie, ktora paczka jest nastepna - model nie musi (i nie
+  // powinien) liczyc stron. 2026-10-21: model dwa razy poprosil o te sama
+  // strone i podpisal ja jako "21-30".
+  lastServedPage: number;
 }
 
 const store = new Map<string, StoredResultSet>();
@@ -46,7 +51,10 @@ function evictExpired(): void {
 export function saveResultSet(hotels: any[], pageSize: number, meta: Record<string, unknown>): string {
   evictExpired();
   const id = randomUUID();
-  store.set(id, { hotels, page_size: pageSize, meta, createdAt: Date.now() });
+  // Kazdy hotel dostaje stala pozycje na liscie (1..N) - model pokazuje
+  // dokladnie te numery, wiec od razu widac, gdyby przepisal stara paczke.
+  const numbered = hotels.map((h, i) => ({ position: i + 1, ...h }));
+  store.set(id, { hotels: numbered, page_size: pageSize, meta, createdAt: Date.now(), lastServedPage: 1 });
   return id;
 }
 

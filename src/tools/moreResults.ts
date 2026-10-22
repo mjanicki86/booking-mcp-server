@@ -2,11 +2,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getResultSet, getPage, totalPages } from "../services/resultStore.js";
 
+// ---------------------------------------------------------------------------
+// KOLEJNE PACZKI WYNIKOW (2026-10-21, v2)
+//
+// v1 wymagala od modelu podania numeru strony. Test w Copilot Studio: model
+// dwa razy wyslal te sama strone, podpisal ja "21-30", a "ostatni hotel"
+// wzial z pierwszej paczki. Teraz SERWER pamieta, ktora paczke juz wydal
+// (lastServedPage) - model wola narzedzie tylko z result_set_id i dostaje
+// nastepna paczke. page zostaje opcjonalne, wylacznie dla prosby typu
+// "pokaz jeszcze raz pozycje 11-20".
+// Kazdy hotel ma stale pole "position" (1..N) - model ma pokazac dokladnie
+// te numery, wiec przepisanie starej paczki od razu widac.
+// ---------------------------------------------------------------------------
+
 const MoreResultsInputSchema = z.object({
   result_set_id: z.string().min(8).max(100)
-    .describe("The 'result_set_id' from the most recent booking_search_hotels response (or from a previous booking_get_more_results response)."),
-  page: z.number().int().min(2).max(20)
-    .describe("Page number to show, starting at 2 for the second batch. Use 'next_page' from the previous response."),
+    .describe("The 'result_set_id' from the booking_search_hotels response. Always the same id for the whole search."),
+  page: z.number().int().min(1).max(20).optional()
+    .describe("LEAVE EMPTY for 'dalej'/'next'/'more' - the server knows which batch comes next. Set it ONLY if the user explicitly asks to see a specific batch again (e.g. 'pokaż jeszcze raz 11-20' -> page 2)."),
 });
 
 type MoreResultsInput = z.infer<typeof MoreResultsInputSchema>;
@@ -17,20 +30,20 @@ export function registerMoreResultsTool(server: McpServer): void {
     {
       title: "Show More Hotels From Last Search",
       description:
-        "Return the NEXT batch of hotels from a search that was already done with booking_search_hotels. " +
-        "Use it when the user asks for more/next/the rest/all results ('pokaż kolejne', 'dalej', 'więcej', " +
-        "'pokaż resztę', 'daj wszystkie'). It does NOT call Booking.com - the hotels, prices and order are " +
-        "exactly those of the original search, so do NOT call booking_search_hotels again just to see more " +
-        "results. Args: result_set_id and page (use next_page from the previous response). " +
-        "Display the returned batch in the same format as before, numbered continuing from the previous " +
-        "batch (e.g. 11-20), and end with how many remain and that the user can write 'dalej' for more. " +
-        "If status is 'expired', silently re-run booking_search_hotels with the provided active_search_state " +
-        "(if available) and then show the requested batch from the new result_set_id.",
+        "Return the NEXT batch of hotels from a search already done with booking_search_hotels. Use it when " +
+        "the user asks for more/next/the rest ('dalej', 'pokaż kolejne', 'więcej', 'pokaż resztę', 'daj wszystkie'). " +
+        "Call it with ONLY result_set_id (do not pass page) - the server tracks which batch is next. " +
+        "It does NOT call Booking.com, so do NOT call booking_search_hotels again just to see more results. " +
+        "DISPLAY: show EXACTLY the hotels in this response, each numbered with its 'position' field " +
+        "(e.g. 21., 22., ...). Never re-use hotels from an earlier batch and never invent the list - if you " +
+        "notice the hotels look the same as before, still show only what this response contains. " +
+        "If status is 'no_more_results', say all results were already shown. If status is 'expired', re-run " +
+        "booking_search_hotels with the last active_search_state and then call this tool with the new result_set_id.",
       inputSchema: MoreResultsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
@@ -42,9 +55,8 @@ export function registerMoreResultsTool(server: McpServer): void {
         const output = {
           status: "expired",
           message: "This result set is no longer available (older than 1 hour or the server restarted). " +
-            "Re-run booking_search_hotels with the same parameters (active_search_state from the last search " +
-            "in this conversation) and show the requested batch from the new result_set_id. Do not tell " +
-            "the user about this technical detail unless the new search returns different hotels.",
+            "Re-run booking_search_hotels with the last active_search_state from this conversation, then call " +
+            "booking_get_more_results with the new result_set_id. Do not mention this technical detail to the user.",
         };
         return {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -54,13 +66,16 @@ export function registerMoreResultsTool(server: McpServer): void {
 
       const pages = totalPages(entry);
       const total = entry.hotels.length;
+      const requestedPage = params.page ?? entry.lastServedPage + 1;
 
-      if (params.page > pages) {
+      if (requestedPage > pages) {
+        console.error("=== DIAG more_results: zestaw " + params.result_set_id + " - brak kolejnych (strona " +
+          requestedPage + " > " + pages + ").");
         const output = {
           status: "no_more_results",
           total_matching: total,
-          total_pages: pages,
-          message: "All " + total + " matching hotels have already been shown. Tell the user there are no more results for this search.",
+          message: "All " + total + " matching hotels have already been shown (positions 1-" + total + "). " +
+            "Tell the user there are no more results for this search. Do NOT list any hotels.",
         };
         return {
           content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
@@ -68,31 +83,34 @@ export function registerMoreResultsTool(server: McpServer): void {
         };
       }
 
-      const hotels = getPage(entry, params.page);
-      const from = (params.page - 1) * entry.page_size + 1;
+      const hotels = getPage(entry, requestedPage);
+      entry.lastServedPage = Math.max(entry.lastServedPage, requestedPage);
+      const from = (requestedPage - 1) * entry.page_size + 1;
       const to = from + hotels.length - 1;
-      const hasMore = params.page < pages;
+      const hasMore = requestedPage < pages;
+      const remaining = total - to;
 
-      console.error("=== DIAG more_results: zestaw " + params.result_set_id + ", strona " + params.page +
-        "/" + pages + " (hotele " + from + "-" + to + " z " + total + "), bez zapytan do API.");
+      console.error("=== DIAG more_results: zestaw " + params.result_set_id + ", strona " + requestedPage +
+        "/" + pages + (params.page != null ? " (podana przez model)" : " (automatycznie nastepna)") +
+        ", pozycje " + from + "-" + to + " z " + total + ": pierwszy=\"" + (hotels[0]?.name ?? "-") +
+        "\", ostatni=\"" + (hotels[hotels.length - 1]?.name ?? "-") + "\", bez zapytan do API.");
 
       const output: any = {
         status: "ok",
         result_set_id: params.result_set_id,
-        page: params.page,
-        total_pages: pages,
-        showing_from: from,
-        showing_to: to,
+        batch: requestedPage,
+        total_batches: pages,
+        showing_positions: from + "-" + to,
         total_matching: total,
+        remaining: remaining,
         has_more: hasMore,
-        next_page: hasMore ? params.page + 1 : null,
         hotels: hotels,
         ...entry.meta,
-        display_instruction: "Show hotels " + from + "-" + to + " of " + total + ", numbered " + from + "-" + to +
-          ", in exactly this order and in the same format as the previous batch. " +
+        display_instruction: "Show ONLY these " + hotels.length + " hotels, numbered with their 'position' " +
+          "field (" + from + "-" + to + "), in this exact order, in the same format as before. " +
           (hasMore
-            ? "Then tell the user " + (total - to) + " more remain and they can write 'dalej' to see the next batch."
-            : "Then tell the user these were the last results of this search."),
+            ? "Then say " + remaining + " more remain and the user can write 'dalej'."
+            : "Then say these were the last results of this search (all " + total + " shown)."),
       };
 
       return {
