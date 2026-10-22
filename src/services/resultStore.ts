@@ -34,6 +34,7 @@ export interface StoredResultSet {
   meta: Record<string, unknown>;
   createdAt: number;
   lastServedPage: number;        // ostatnio wydana paczka (1 = pierwsza)
+  lastAccess: number;            // ostatnie uzycie (zapis albo wydanie paczki)
 }
 
 const store = new Map<string, StoredResultSet>();
@@ -75,7 +76,8 @@ export function saveResultSet(key: string, hotels: any[], pageSize: number, meta
   evictExpired();
   const numbered = hotels.map((h, i) => ({ position: i + 1, ...h }));
   store.delete(key); // nowe wyszukiwanie = od poczatku i "najmlodszy" wpis
-  store.set(key, { hotels: numbered, page_size: pageSize, meta, createdAt: Date.now(), lastServedPage: 1 });
+  const now = Date.now();
+  store.set(key, { hotels: numbered, page_size: pageSize, meta, createdAt: now, lastServedPage: 1, lastAccess: now });
 }
 
 export function getResultSet(key: string): StoredResultSet | null {
@@ -86,6 +88,22 @@ export function getResultSet(key: string): StoredResultSet | null {
     return null;
   }
   return entry;
+}
+
+// 2026-10-22: przy "dalej" model wysylal SAMO continue_previous:true, bez
+// miasta/dat/filtrow - nie da sie wtedy policzyc klucza. Bierzemy liste
+// uzyta najpozniej (w ciagu maxAgeMs). Przy kilku konsultantach naraz moze
+// to trafic w cudza liste - dlatego krotkie okno i jawna informacja w
+// odpowiedzi, ktorego wyszukiwania dotyczy paczka (meta.location/daty).
+export function getMostRecentResultSet(maxAgeMs: number): { key: string; entry: StoredResultSet } | null {
+  let best: { key: string; entry: StoredResultSet } | null = null;
+  const now = Date.now();
+  for (const [key, entry] of store) {
+    if (now - entry.createdAt >= RESULT_TTL_MS) continue;
+    if (now - entry.lastAccess > maxAgeMs) continue;
+    if (!best || entry.lastAccess > best.entry.lastAccess) best = { key, entry };
+  }
+  return best;
 }
 
 export function totalPages(entry: StoredResultSet): number {
