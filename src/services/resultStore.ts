@@ -1,18 +1,26 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
-// PAMIEC WYNIKOW WYSZUKIWANIA (2026-10-21)
+// PAMIEC WYNIKOW WYSZUKIWANIA - PACZKI (2026-10-22, v3)
 //
-// booking_search_hotels pobiera i filtruje pelna liste (np. 55 hoteli), ale
-// modelowi oddaje tylko pierwsza paczke - dluga lista nie miescila sie ani
-// w CHARACTER_LIMIT odpowiedzi narzedzia, ani w limicie dlugosci odpowiedzi
-// agenta w Copilot Studio (model pisal "lista wszystkich 55" i wstawial "...").
-// Pelna, juz posortowana lista trafia tutaj pod result_set_id, a kolejne
-// paczki wydaje booking_get_more_results - BEZ zapytan do Booking.com.
+// v1/v2 trzymaly liste pod losowym result_set_id. Test 2026-10-22 pokazal, ze
+// Copilot Studio NIE przekazuje modelowi wynikow narzedzi z poprzednich tur
+// - przy "dalej" model nie znal identyfikatora i go WYMYSLAL
+// ("b2e2e1e2-7c2a-4e2a-8e2e-2e2e2e2e2e2e"), dostawal "wygasl", robil nowe
+// wyszukiwanie i znow dostawal pozycje 11-20.
 //
-// Pamiec procesu: po restarcie/deployu lista znika - wtedy narzedzie kaze
-// modelowi powtorzyc wyszukiwanie z active_search_state (jedyny przypadek,
-// gdy "kolejne wyniki" wolaja API).
+// v3: kluczem jest SKROT PARAMETROW WYSZUKIWANIA (miasto/wspolrzedne, daty,
+// filtry, sortowanie). Te parametry model pamieta z tekstu rozmowy i podaje
+// identycznie - wiec "dalej" = to samo wyszukiwanie + continue_previous:true
+// trafia w zapisana liste i dostaje nastepna paczke, bez zapytan do API.
+//
+// Ograniczenie: dwoch konsultantow z IDENTYCZNYM wyszukiwaniem (te same daty,
+// filtry, miasto) w tej samej godzinie dzieli licznik paczek. Nowe
+// wyszukiwanie zawsze zaczyna od paczki 1, wiec skutek to najwyzej
+// przeskoczona paczka - akceptowalne.
+//
+// Pamiec procesu: po restarcie/deployu lista znika - "dalej" robi wtedy
+// nowe wyszukiwanie i zaczyna od poczatku (z informacja dla usera).
 // ---------------------------------------------------------------------------
 
 export const RESULT_PAGE_SIZE = 10;
@@ -21,26 +29,20 @@ const RESULT_TTL_MS = 60 * 60 * 1000;
 const MAX_STORED_SETS = 500;
 
 export interface StoredResultSet {
-  hotels: any[];                 // juz sformatowane (formatHotel + distance_km), w finalnej kolejnosci
+  hotels: any[];                 // sformatowane, z polem position (1..N), w finalnej kolejnosci
   page_size: number;
-  meta: Record<string, unknown>; // location, checkin, checkout, active_search_state, notatki itd.
+  meta: Record<string, unknown>;
   createdAt: number;
-  // Ostatnio wydana strona (1 = pierwsza paczka z booking_search_hotels).
-  // Serwer sam wie, ktora paczka jest nastepna - model nie musi (i nie
-  // powinien) liczyc stron. 2026-10-21: model dwa razy poprosil o te sama
-  // strone i podpisal ja jako "21-30".
-  lastServedPage: number;
+  lastServedPage: number;        // ostatnio wydana paczka (1 = pierwsza)
 }
 
 const store = new Map<string, StoredResultSet>();
 
 function evictExpired(): void {
   const now = Date.now();
-  for (const [id, entry] of store) {
-    if (now - entry.createdAt >= RESULT_TTL_MS) store.delete(id);
+  for (const [key, entry] of store) {
+    if (now - entry.createdAt >= RESULT_TTL_MS) store.delete(key);
   }
-  // Twardy limit pamieci - Map zachowuje kolejnosc wstawiania, wiec
-  // usuwamy najstarsze.
   while (store.size > MAX_STORED_SETS) {
     const oldest = store.keys().next().value;
     if (oldest === undefined) break;
@@ -48,21 +50,39 @@ function evictExpired(): void {
   }
 }
 
-export function saveResultSet(hotels: any[], pageSize: number, meta: Record<string, unknown>): string {
-  evictExpired();
-  const id = randomUUID();
-  // Kazdy hotel dostaje stala pozycje na liscie (1..N) - model pokazuje
-  // dokladnie te numery, wiec od razu widac, gdyby przepisal stara paczke.
-  const numbered = hotels.map((h, i) => ({ position: i + 1, ...h }));
-  store.set(id, { hotels: numbered, page_size: pageSize, meta, createdAt: Date.now(), lastServedPage: 1 });
-  return id;
+// Stabilny klucz z parametrow wyszukiwania: klucze obiektu sortowane, tablice
+// sortowane, wartosci puste pomijane - zeby kolejnosc pol w wywolaniu modelu
+// albo brak domyslnego pola nie zmienialy klucza.
+export function makeSearchKey(params: Record<string, unknown>): string {
+  const norm = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(norm).sort();
+    if (v && typeof v === "object") {
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(v as object).sort()) {
+        const val = (v as any)[k];
+        if (val === undefined || val === null || (Array.isArray(val) && val.length === 0)) continue;
+        o[k] = norm(val);
+      }
+      return o;
+    }
+    if (typeof v === "string") return v.trim().toLowerCase();
+    return v;
+  };
+  return createHash("sha1").update(JSON.stringify(norm(params))).digest("hex").slice(0, 16);
 }
 
-export function getResultSet(id: string): StoredResultSet | null {
-  const entry = store.get(id);
+export function saveResultSet(key: string, hotels: any[], pageSize: number, meta: Record<string, unknown>): void {
+  evictExpired();
+  const numbered = hotels.map((h, i) => ({ position: i + 1, ...h }));
+  store.delete(key); // nowe wyszukiwanie = od poczatku i "najmlodszy" wpis
+  store.set(key, { hotels: numbered, page_size: pageSize, meta, createdAt: Date.now(), lastServedPage: 1 });
+}
+
+export function getResultSet(key: string): StoredResultSet | null {
+  const entry = store.get(key);
   if (!entry) return null;
   if (Date.now() - entry.createdAt >= RESULT_TTL_MS) {
-    store.delete(id);
+    store.delete(key);
     return null;
   }
   return entry;

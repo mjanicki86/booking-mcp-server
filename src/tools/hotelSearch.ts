@@ -3,7 +3,21 @@ import { BookingApiClient, BookingApiRequestError, formatHotel } from "../servic
 import { resolveCityId } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
-import { saveResultSet, RESULT_PAGE_SIZE } from "../services/resultStore.js";
+import { z } from "zod";
+import {
+  saveResultSet, getResultSet, getPage, totalPages, makeSearchKey, RESULT_PAGE_SIZE,
+} from "../services/resultStore.js";
+
+// "dalej" = to samo wyszukiwanie + continue_previous:true. Patrz resultStore.ts
+// (v3) - Copilot Studio nie przekazuje modelowi wynikow narzedzi z poprzednich
+// tur, wiec model nie zna zadnego identyfikatora listy, ale pamieta parametry.
+const SearchToolInputSchema = HotelSearchInputSchema.extend({
+  continue_previous: z.boolean().optional()
+    .describe("Set to true ONLY when the user asks for the next batch of the SAME search ('dalej', 'pokaż kolejne', " +
+      "'więcej', 'pokaż resztę'). Pass EXACTLY the same other parameters as in the previous search. The server then " +
+      "returns the next 10 hotels from the stored list without querying Booking.com. Omit for any new or changed search."),
+});
+type SearchToolInput = HotelSearchInput & { continue_previous?: boolean };
 
 const HOSTEL_ACCOMMODATION_TYPE = 203;
 const APARTMENT_ACCOMMODATION_TYPE = 201;
@@ -133,8 +147,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes: (1) city + country for generic 'hotels in [city]' requests (city name in ENGLISH); (2) latitude + longitude (+ radius_km) MANDATORY whenever the user names a specific place or distance - get REAL coordinates by calling booking_find_landmark first (do not invent them yourself), then pass them here. Never fall back to a plain city search and claim proximity. When copying latitude/longitude forward from a previous turn's active_search_state, copy the EXACT numeric values (all decimal digits) - do not round or approximate them from memory, since even small coordinate changes shift the search area and can silently change which hotels are returned.\nCITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, could be a foreign city, could be a typo), do NOT silently substitute the closest city name you happen to know - call booking_search_cities FIRST to see real matches. If the name could plausibly belong to more than one country (e.g. treating 'Lublana' as a typo for 'Lublin' in Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which one they mean rather than picking one yourself - guessing wrong sends completely the wrong results with no warning.\nDATES are OPTIONAL: if not given, call the tool WITHOUT checkin/checkout instead of asking - sample prices ~3 months ahead will be returned.\nCONTEXT ACROSS TURNS - CRITICAL: every response from this tool includes an 'active_search_state' object listing EVERY parameter used in that search. When the user's next message only changes ONE thing (radius, a filter, star rating, sort order, etc.), you MUST copy ALL other fields from the most recent 'active_search_state' unchanged into your next call - never silently reset location/coordinates, dates, stars, or exclude_hostels to defaults just because several turns have passed or because the user only mentioned one change. Losing a parameter silently produces completely wrong results (e.g. airport hotels instead of city-centre hotels because coordinates were dropped) without any warning to the user - this is a serious, high-priority failure mode to avoid.\nEXPLICITLY NAME CHANGED/REMOVED FILTERS: whenever the user asks you to remove or change ONE filter compared to the previous turn (e.g. 'without the dog now', 'bez psa teraz', 'no breakfast filter now', 'zmień na 3 gwiazdki'), your reply MUST explicitly state which filter changed and that the result set may now be different/larger because of it (e.g. 'Poniżej hotele BEZ filtra pet-friendly - lista jest dłuższa, bo obejmuje też obiekty, które niekoniecznie akceptują zwierzęta'). Do NOT just silently return a different/longer list and let the user infer the change from the hotel count or names alone - a consultant reading the reply must be able to tell at a glance which criterion no longer applies, otherwise they may wrongly assume every listed hotel still satisfies the original (now-removed) requirement. IF THE LIST IS IDENTICAL AFTER REMOVING A FILTER, SAY SO: compare the hotels you just received with the ones from the previous turn. If the set is the same, do not hedge with 'the list may now be longer or different' - state plainly that the results are unchanged and why, e.g. 'Lista jest identyczna - wszystkie te hotele i tak akceptowały zwierzęta, więc zdjęcie filtra nic nie zmieniło'. A vague 'may be different' next to an unchanged list tells the user nothing and hides the real finding.\nPRICE: max_price_per_night / min_price_per_night are enforced server-side - always call the tool again with the new value if the user changes their budget, never just re-describe previous results.\nAMENITIES: use required_facilities (e.g. ['pool','gym']) to filter hotels that must have specific amenities - this is enforced server-side and is far more reliable than checking booking_get_hotel_details on each result yourself.\nQUALITY: set exact_stars:true whenever the user names ONE star category without words like 'co najmniej'/'minimum'/'od'/'at least'/'or more'/'+' - e.g. 'hotele 3*', 'hotel 3-gwiazdkowy', '4 star hotel' all mean EXACTLY that category (consultants mean the category, not a floor). Only 'co najmniej 3*', 'min. 3 gwiazdki', '3* i wyżej', '3+' mean a minimum (exact_stars:false). min_review_score, exclude_hostels (true by default - excludes hostels, apartment-style listings, serviced apartments, AND villas/B&Bs, keeping only proper hotels; set false only if user explicitly says those are fine too).\nSORTING: sort_by is enforced entirely server-side within this tool using a guaranteed local re-sort (NOT delegated to Booking.com's own sort parameter, which was found to silently drop real hotels from results when combined with other filters) - the order you see in the response always matches the requested sort_by exactly and includes the full, correct set of matching hotels.\nBREAKFAST - CRITICAL RULE: breakfast_only means 'ONLY show hotels where breakfast is bundled FREE in the room price'. Set it to true ONLY when the user explicitly says breakfast must be included/free/bundled/'w cenie' (e.g. 'breakfast included', 'ze śniadaniem w cenie', 'free breakfast'). If the user just says 'with breakfast'/'ze śniadaniem' WITHOUT that qualifier, leave breakfast_only FALSE - a plain mention of breakfast means 'show me hotels regardless of whether breakfast is free or paid, and tell me which is which', NOT 'exclude hotels that charge for it'. Getting this wrong (setting breakfast_only=true for a plain 'ze śniadaniem' mention) is a common, serious mistake: it silently throws away real, bookable hotels that DO serve breakfast (just as a paid add-on) and can produce a false 'no hotels found' in an area that genuinely has hotels. Each result already includes 'breakfast_included' (free) AND 'breakfast_price_paid' (paid add-on price) - use these two fields to describe the breakfast situation instead of filtering it out.\nFILTERS ARE STRICT: breakfast_only and free_cancellation_only are HARD requirements - if no hotel matches, you get zero results (with a message to relax filters), NEVER a hotel that fails the requirement. Do not assume a returned hotel satisfies a filter you didn't set; only trust filters you actually passed.\nZERO RESULTS WITH MULTIPLE FILTERS: if you get zero results while using several filters together (location + price + breakfast_only + exclude_hostels etc.), the response includes a 'zero_results_breakdown' showing how many hotels survived EACH filtering step - use it to tell the user EXACTLY which filter caused the drop to zero (e.g. 'there are hotels nearby, but none have breakfast bundled free - several do offer it as a paid extra') instead of implying no hotels exist in the area at all.\nDISTANCE: in coordinates mode, you MUST mention each hotel's distance_km in your reply to the user - this is usually the whole reason they searched near that point, never omit it.\nRESULTS ARE PAGED: this tool returns at most " + RESULT_PAGE_SIZE + " hotels per response (a longer list does not fit in one reply). The full, filtered and sorted list is kept on the server under 'result_set_id'. Show ALL hotels of the returned batch, then say how many match in total and that the user can write 'dalej' for the next batch. When the user asks for more/next/the rest/all ('pokaż kolejne', 'dalej', 'więcej', 'daj wszystkie 55'), call booking_get_more_results with ONLY result_set_id (the server knows which batch is next - do not pass page) - do NOT call booking_search_hotels again for that (it would re-query Booking.com and may return different prices/order). NEVER claim to show 'all N hotels' when you show one batch, and never fill a list with '...'.\nNOTE ON RESULT COUNT: Booking.com's API may internally return slightly fewer raw results than requested even when hotels are genuinely available (an API quirk, not a bug) - this tool compensates internally, but if fewer than results_limit hotels remain after filtering, that reflects genuine availability, not an error.\nOther args: adults, rooms, children_count/children_ages, currency, results_limit (up to 100), sort_by (price/review_score/distance/stars/popularity).\nNote: this tool does not return full amenity lists or addresses in detail - for full details on ONE specific hotel, call booking_get_hotel_details.\nFIELD NAMES ARE INTERNAL: never show raw field names from this response to the user - not distance_km, review_score, breakfast_price_paid, results_limit, exclude_hostels or any other. Write them in natural language ('1,3 km od dworca', 'ocena gości 8,7/10', 'śniadanie dodatkowo 95 PLN'). A reply containing '(distance_km)' or similar reads like a debug dump, not an answer for a travel consultant.\nGUEST RATINGS: review_score (1-10) and review_count come from Booking.com's own review database and are fetched for every search - when a hotel has a score, INCLUDE it in your reply, and never invent, estimate or round a rating that is not in the response. If review_score is null for a hotel, say its rating is unavailable rather than guessing one. min_review_score is a HARD filter enforced on these real scores, and sort_by=review_score orders by them (highest first).\nRESULTS_LIMIT: only pass results_limit when the user asked for FEWER hotels than one batch ('pokaż 5 najlepszych'). For bigger numbers ('pokaż 50') do not pass it - use the batches described above. Always tell the user the total number of matching hotels ('paging_note').\nBREAKFAST WORDING: breakfast_included and breakfast_price_paid can BOTH be set on the same hotel - that means breakfast IS free in the room rate and the price refers to an optional upgraded/extended breakfast. Never write a self-contradictory phrase like 'breakfast included, extra charge 100 PLN'. When breakfast_included is true, say breakfast is included (you may add that a paid upgrade exists); only when it is false does breakfast_price_paid describe the cost of adding breakfast.\nReturns hotels with prices and booking URLs.",
-      inputSchema: HotelSearchInputSchema.shape,
+      description: "Search for available hotels in ANY city worldwide, or near ANY specific point (landmark, station, address) using Booking.com.\nLOCATION - use ONE of two modes: (1) city + country for generic 'hotels in [city]' requests (city name in ENGLISH); (2) latitude + longitude (+ radius_km) MANDATORY whenever the user names a specific place or distance - get REAL coordinates by calling booking_find_landmark first (do not invent them yourself), then pass them here. Never fall back to a plain city search and claim proximity. When copying latitude/longitude forward from a previous turn's active_search_state, copy the EXACT numeric values (all decimal digits) - do not round or approximate them from memory, since even small coordinate changes shift the search area and can silently change which hotels are returned.\nCITY SPELLING: if you are not 100% certain a city name is correct/exists (unusual spelling, could be a foreign city, could be a typo), do NOT silently substitute the closest city name you happen to know - call booking_search_cities FIRST to see real matches. If the name could plausibly belong to more than one country (e.g. treating 'Lublana' as a typo for 'Lublin' in Poland instead of recognizing it as 'Ljubljana' in Slovenia), ASK THE USER to confirm which one they mean rather than picking one yourself - guessing wrong sends completely the wrong results with no warning.\nDATES are OPTIONAL: if not given, call the tool WITHOUT checkin/checkout instead of asking - sample prices ~3 months ahead will be returned.\nCONTEXT ACROSS TURNS - CRITICAL: every response from this tool includes an 'active_search_state' object listing EVERY parameter used in that search. When the user's next message only changes ONE thing (radius, a filter, star rating, sort order, etc.), you MUST copy ALL other fields from the most recent 'active_search_state' unchanged into your next call - never silently reset location/coordinates, dates, stars, or exclude_hostels to defaults just because several turns have passed or because the user only mentioned one change. Losing a parameter silently produces completely wrong results (e.g. airport hotels instead of city-centre hotels because coordinates were dropped) without any warning to the user - this is a serious, high-priority failure mode to avoid.\nEXPLICITLY NAME CHANGED/REMOVED FILTERS: whenever the user asks you to remove or change ONE filter compared to the previous turn (e.g. 'without the dog now', 'bez psa teraz', 'no breakfast filter now', 'zmień na 3 gwiazdki'), your reply MUST explicitly state which filter changed and that the result set may now be different/larger because of it (e.g. 'Poniżej hotele BEZ filtra pet-friendly - lista jest dłuższa, bo obejmuje też obiekty, które niekoniecznie akceptują zwierzęta'). Do NOT just silently return a different/longer list and let the user infer the change from the hotel count or names alone - a consultant reading the reply must be able to tell at a glance which criterion no longer applies, otherwise they may wrongly assume every listed hotel still satisfies the original (now-removed) requirement. IF THE LIST IS IDENTICAL AFTER REMOVING A FILTER, SAY SO: compare the hotels you just received with the ones from the previous turn. If the set is the same, do not hedge with 'the list may now be longer or different' - state plainly that the results are unchanged and why, e.g. 'Lista jest identyczna - wszystkie te hotele i tak akceptowały zwierzęta, więc zdjęcie filtra nic nie zmieniło'. A vague 'may be different' next to an unchanged list tells the user nothing and hides the real finding.\nPRICE: max_price_per_night / min_price_per_night are enforced server-side - always call the tool again with the new value if the user changes their budget, never just re-describe previous results.\nAMENITIES: use required_facilities (e.g. ['pool','gym']) to filter hotels that must have specific amenities - this is enforced server-side and is far more reliable than checking booking_get_hotel_details on each result yourself.\nQUALITY: set exact_stars:true whenever the user names ONE star category without words like 'co najmniej'/'minimum'/'od'/'at least'/'or more'/'+' - e.g. 'hotele 3*', 'hotel 3-gwiazdkowy', '4 star hotel' all mean EXACTLY that category (consultants mean the category, not a floor). Only 'co najmniej 3*', 'min. 3 gwiazdki', '3* i wyżej', '3+' mean a minimum (exact_stars:false). min_review_score, exclude_hostels (true by default - excludes hostels, apartment-style listings, serviced apartments, AND villas/B&Bs, keeping only proper hotels; set false only if user explicitly says those are fine too).\nSORTING: sort_by is enforced entirely server-side within this tool using a guaranteed local re-sort (NOT delegated to Booking.com's own sort parameter, which was found to silently drop real hotels from results when combined with other filters) - the order you see in the response always matches the requested sort_by exactly and includes the full, correct set of matching hotels.\nBREAKFAST - CRITICAL RULE: breakfast_only means 'ONLY show hotels where breakfast is bundled FREE in the room price'. Set it to true ONLY when the user explicitly says breakfast must be included/free/bundled/'w cenie' (e.g. 'breakfast included', 'ze śniadaniem w cenie', 'free breakfast'). If the user just says 'with breakfast'/'ze śniadaniem' WITHOUT that qualifier, leave breakfast_only FALSE - a plain mention of breakfast means 'show me hotels regardless of whether breakfast is free or paid, and tell me which is which', NOT 'exclude hotels that charge for it'. Getting this wrong (setting breakfast_only=true for a plain 'ze śniadaniem' mention) is a common, serious mistake: it silently throws away real, bookable hotels that DO serve breakfast (just as a paid add-on) and can produce a false 'no hotels found' in an area that genuinely has hotels. Each result already includes 'breakfast_included' (free) AND 'breakfast_price_paid' (paid add-on price) - use these two fields to describe the breakfast situation instead of filtering it out.\nFILTERS ARE STRICT: breakfast_only and free_cancellation_only are HARD requirements - if no hotel matches, you get zero results (with a message to relax filters), NEVER a hotel that fails the requirement. Do not assume a returned hotel satisfies a filter you didn't set; only trust filters you actually passed.\nZERO RESULTS WITH MULTIPLE FILTERS: if you get zero results while using several filters together (location + price + breakfast_only + exclude_hostels etc.), the response includes a 'zero_results_breakdown' showing how many hotels survived EACH filtering step - use it to tell the user EXACTLY which filter caused the drop to zero (e.g. 'there are hotels nearby, but none have breakfast bundled free - several do offer it as a paid extra') instead of implying no hotels exist in the area at all.\nDISTANCE: in coordinates mode, you MUST mention each hotel's distance_km in your reply to the user - this is usually the whole reason they searched near that point, never omit it.\nRESULTS ARE PAGED: this tool returns at most " + RESULT_PAGE_SIZE + " hotels per response (a longer list does not fit in one reply); the full filtered and sorted list is kept on the server. Show ALL hotels of the returned batch numbered with their 'position' field, then say how many match in total and that the user can write 'dalej'. NEXT BATCH: when the user asks for more/next/the rest ('dalej', 'pokaż kolejne', 'więcej', 'daj wszystkie'), call THIS tool again with EXACTLY the same parameters as the previous search PLUS continue_previous:true - the server returns the next batch (positions 11-20, then 21-30, ...) from the stored list without querying Booking.com. Never invent ids, never re-use hotels from an earlier batch, never claim to show 'all N hotels' when you show one batch, and never fill a list with '...'.\nNOTE ON RESULT COUNT: Booking.com's API may internally return slightly fewer raw results than requested even when hotels are genuinely available (an API quirk, not a bug) - this tool compensates internally, but if fewer than results_limit hotels remain after filtering, that reflects genuine availability, not an error.\nOther args: adults, rooms, children_count/children_ages, currency, results_limit (up to 100), sort_by (price/review_score/distance/stars/popularity).\nNote: this tool does not return full amenity lists or addresses in detail - for full details on ONE specific hotel, call booking_get_hotel_details.\nFIELD NAMES ARE INTERNAL: never show raw field names from this response to the user - not distance_km, review_score, breakfast_price_paid, results_limit, exclude_hostels or any other. Write them in natural language ('1,3 km od dworca', 'ocena gości 8,7/10', 'śniadanie dodatkowo 95 PLN'). A reply containing '(distance_km)' or similar reads like a debug dump, not an answer for a travel consultant.\nGUEST RATINGS: review_score (1-10) and review_count come from Booking.com's own review database and are fetched for every search - when a hotel has a score, INCLUDE it in your reply, and never invent, estimate or round a rating that is not in the response. If review_score is null for a hotel, say its rating is unavailable rather than guessing one. min_review_score is a HARD filter enforced on these real scores, and sort_by=review_score orders by them (highest first).\nRESULTS_LIMIT: only pass results_limit when the user asked for FEWER hotels than one batch ('pokaż 5 najlepszych'). For bigger numbers ('pokaż 50') do not pass it - use the batches described above. Always tell the user the total number of matching hotels ('paging_note').\nBREAKFAST WORDING: breakfast_included and breakfast_price_paid can BOTH be set on the same hotel - that means breakfast IS free in the room rate and the price refers to an optional upgraded/extended breakfast. Never write a self-contradictory phrase like 'breakfast included, extra charge 100 PLN'. When breakfast_included is true, say breakfast is included (you may add that a paid upgrade exists); only when it is false does breakfast_price_paid describe the cost of adding breakfast.\nReturns hotels with prices and booking URLs.",
+      inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -142,7 +156,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         openWorldHint: true,
       },
     },
-    async (params: HotelSearchInput) => {
+    async (params: SearchToolInput) => {
 
       const usingCoordinates = params.latitude != null && params.longitude != null;
 
@@ -178,6 +192,74 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       }
 
       const nights = Math.round((checkoutDate.getTime() - checkinDate.getTime()) / 86400000);
+
+      // Klucz listy = parametry wyszukiwania (bez continue_previous i results_limit).
+      const searchKey = makeSearchKey({
+        city: params.city, country: params.country,
+        latitude: params.latitude != null ? Number(params.latitude).toFixed(5) : undefined,
+        longitude: params.longitude != null ? Number(params.longitude).toFixed(5) : undefined,
+        radius_km: params.latitude != null ? params.radius_km : undefined,
+        checkin: checkin, checkout: checkout,
+        adults: params.adults, rooms: params.rooms, children_ages: params.children_ages,
+        currency: params.currency,
+        min_price_per_night: params.min_price_per_night, max_price_per_night: params.max_price_per_night,
+        min_review_score: params.min_review_score, min_stars: params.min_stars, exact_stars: params.exact_stars ?? false,
+        exclude_hostels: params.exclude_hostels, required_facilities: params.required_facilities,
+        breakfast_only: params.breakfast_only, free_cancellation_only: params.free_cancellation_only,
+        sort_by: params.sort_by,
+      });
+
+      let continuationExpired = false;
+      if (params.continue_previous) {
+        const entry = getResultSet(searchKey);
+        if (entry) {
+          const pages = totalPages(entry);
+          const total = entry.hotels.length;
+          const nextPage = entry.lastServedPage + 1;
+          if (nextPage > pages) {
+            console.error("=== DIAG paging: continue_previous, klucz " + searchKey + " - brak kolejnych (" +
+              total + " hoteli juz pokazane).");
+            const out = {
+              status: "no_more_results",
+              total_matching: total,
+              message: "All " + total + " matching hotels have already been shown (positions 1-" + total + "). " +
+                "Tell the user there are no more results for this search. Do NOT list any hotels.",
+            };
+            return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+          }
+          const batch = getPage(entry, nextPage);
+          entry.lastServedPage = nextPage;
+          const from = (nextPage - 1) * entry.page_size + 1;
+          const to = from + batch.length - 1;
+          const remaining = total - to;
+          console.error("=== DIAG paging: continue_previous, klucz " + searchKey + ", paczka " + nextPage + "/" + pages +
+            ", pozycje " + from + "-" + to + " z " + total + ": pierwszy=\"" + (batch[0]?.name ?? "-") +
+            "\", ostatni=\"" + (batch[batch.length - 1]?.name ?? "-") + "\", bez zapytan do API.");
+          const out: any = {
+            success: true,
+            batch: nextPage,
+            total_batches: pages,
+            showing_positions: from + "-" + to,
+            total_matching: total,
+            remaining: remaining,
+            has_more: remaining > 0,
+            hotels: batch,
+            ...entry.meta,
+            display_instruction: "Show ONLY these " + batch.length + " hotels, numbered with their 'position' field (" +
+              from + "-" + to + "), in this exact order and in the same format as before. " +
+              (remaining > 0
+                ? "Then say " + remaining + " more remain and the user can write 'dalej'."
+                : "Then say these were the last results of this search (all " + total + " shown)."),
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify(out, null, 2) + "\n\n---\nSource: Booking.com API" }],
+            structuredContent: out,
+          };
+        }
+        continuationExpired = true;
+        console.error("=== DIAG paging: continue_previous, klucz " + searchKey +
+          " - brak zapisanej listy (wygasla, restart albo zmienione parametry) - wykonuje nowe wyszukiwanie.");
+      }
 
       let locationPart: any;
       let locationLabel: string;
@@ -489,7 +571,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         // liste, zapisujemy ja w resultStore, a modelowi oddajemy tylko pierwsza
         // paczke. Wczesniej 55 hoteli przekraczalo CHARACTER_LIMIT (JSON ucinany
         // "...[truncated]") i limit odpowiedzi agenta - model pisal "lista
-        // wszystkich 55" i wstawial "...". Kolejne paczki: booking_get_more_results,
+        // wszystkich 55" i wstawial "...". Kolejne paczki: to samo wyszukiwanie + continue_previous,
         // bez zapytan do Booking.com.
         const allFormatted = hotels.map(function (h) {
           const fh = formatHotel(h, currency);
@@ -614,8 +696,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             "This response contains hotels 1-" + formatted.length + " (batch 1 of " + totalPagesCount + "). " +
             "Show these " + formatted.length + ", then tell the user that " + limitedAll.length +
             " hotels match in total and they can write 'dalej' to see the next " + pageSize + ". " +
-            "For each next batch call booking_get_more_results with ONLY result_set_id (no page - the " +
-            "server tracks which batch is next) - do NOT call booking_search_hotels again.";
+            "For the next batch call booking_search_hotels again with EXACTLY the same parameters plus " +
+            "continue_previous:true - the server returns positions 11-20 (then 21-30, ...) from the stored list.";
           output.has_more = true;
         } else {
           output.has_more = false;
@@ -667,7 +749,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         output.active_search_state = activeSearchState;
         output.active_search_state_instruction = activeSearchStateInstruction;
 
-        if (output.has_more) {
+        {
           const meta: Record<string, unknown> = {
             location: locationLabel,
             search_mode: usingCoordinates ? "coordinates" : "city",
@@ -681,9 +763,14 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (output.filters_applied_note) meta.filters_applied_note = output.filters_applied_note;
           if (output.breakfast_reminder) meta.breakfast_reminder = output.breakfast_reminder;
           if (usingCoordinates) meta.radius_km = params.radius_km;
-          output.result_set_id = saveResultSet(limitedAll, pageSize, meta);
+          saveResultSet(searchKey, limitedAll, pageSize, meta);
           console.error("=== DIAG paging: zapisano " + limitedAll.length + " hoteli (paczki po " + pageSize +
-            ") jako result_set_id=" + output.result_set_id);
+            ") pod kluczem " + searchKey);
+        }
+        if (continuationExpired) {
+          output.continuation_note = "The user asked for the next batch, but the previous list was no longer " +
+            "available (older than 1 hour or the server restarted), so this is a FRESH search starting again from " +
+            "position 1. Tell the user briefly that the list was refreshed and starts from the beginning.";
         }
 
         const text = JSON.stringify(output, null, 2);
