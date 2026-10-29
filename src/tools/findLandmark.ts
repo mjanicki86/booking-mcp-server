@@ -138,42 +138,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
     "booking_find_landmark",
     {
       title: "Find Landmark Coordinates",
-      description:
-        "Find the real coordinates (latitude/longitude) of a landmark, station, airport or point of " +
-        "interest within a city, using Booking.com's own landmark database (with a fallback to " +
-        "general geocoding for addresses/squares not in that database). " +
-        "USE THIS whenever the user wants hotels near a specific named place or wants a distance-based " +
-        "search (e.g. 'within 1km of Fontanna Neptuna', 'near the central station', 'close to the " +
-        "Eiffel Tower', or a plain address/square like 'plac Artura Zawiszy') - do NOT invent or guess " +
-        "coordinates yourself. " +
-        "CALL IT ONCE PER USER MESSAGE: within one reply call it once per place and then go straight to " +
-        "booking_search_hotels - never call it twice for the same place in one reply. In a LATER user message, " +
-        "tool results from earlier messages are NOT visible to you, so for a follow-up about the same place (changing stars, price, breakfast, " +
-        "radius, removing a filter) call this tool again and use exactly the coordinates it returns - " +
-        "never type coordinates from memory. If the user already picked one candidate from a " +
-        "'multiple_matches' question earlier, call it with the full name of the candidate they chose, so " +
-        "they are not asked again. " +
-        "After getting the result, pass the returned latitude/longitude into booking_search_hotels " +
-        "instead of a plain city search. Do NOT choose a radius yourself: pass radius_km ONLY when the " +
-        "user stated a distance ('w promieniu 2 km', 'do 500 m'); for 'koło', 'w pobliżu', 'near' omit " +
-        "radius_km - the server applies its default. " +
-        "If status is 'no_match', tell the user the landmark could not be found by that name in that " +
-        "city (even via general geocoding) and ask them to clarify or try a nearby well-known landmark " +
-        "instead. " +
-        "If status is 'single_match' but 'collapsed_duplicates' is present, the tool found several " +
-        "near-identical entries for the same physical place and already picked one for you - just " +
-        "continue with the returned coordinates and do NOT ask the user to choose. " +
-        "If status is 'multiple_matches', you MUST ask the user which one they mean and WAIT for " +
-        "their reply before calling booking_search_hotels. Do NOT guess one, and do NOT search near " +
-        "every candidate 'to be thorough' - checking multiple locations means multiple expensive " +
-        "searches and a long, overwhelming answer instead of a quick, cheap, single one. Asking first " +
-        "is always faster and cheaper than searching around several guesses. ASKING MEANS ENDING YOUR " +
-        "TURN: after you ask the disambiguation question, stop and wait for the user's actual answer. " +
-        "Never answer your own question, never pick a candidate on the user's behalf, and never " +
-        "produce hotel names, prices, guest ratings, distances or booking links that did not come " +
-        "from a booking_search_hotels response - inventing them is a serious failure. " +
-        "Note: this only searches within ONE city at a time - you must know (or ask for) the city " +
-        "first.",
+      description: "Coordinates of a named place in a city (landmark, station, airport, square or street address) from Booking.com's landmark list, with a fallback to general geocoding. Use it whenever the user wants hotels near a place, then pass latitude/longitude to booking_search_hotels. You need the city (in English) - ask if it is unknown.\nCall it ONCE per place per user message - never again for the same place in the same reply. In a later message call it again (results of earlier messages are not visible to you); if the user picked one of several candidates earlier, use the full name of that candidate. Do not choose a radius here - see booking_search_hotels.\nstatus 'single_match': use the coordinates (also when collapsed_duplicates is present - do not ask the user). 'multiple_matches': ask the user which place they mean and STOP - do not search near several candidates and do not list hotels before they answer. 'no_match': say the place was not found and ask for another name. When data_source is external geocoding, mention that the location is approximate.",
       inputSchema: FindLandmarkInputSchema.shape,
       annotations: {
         readOnlyHint: true,

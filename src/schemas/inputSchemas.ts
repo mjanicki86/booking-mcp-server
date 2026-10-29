@@ -4,18 +4,18 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const HotelSearchInputSchema = z.object({
   city: z.string().min(2).max(100).optional()
-    .describe('City name IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate to English. ONLY for general "hotels in [city]" requests. OPTIONAL if latitude/longitude are provided instead.'),
+    .describe('City name in English, e.g. "Warsaw", "Rome". For "hotels in [city]"; not needed with latitude/longitude.'),
   country: z.string().min(2).max(2).optional()
-    .describe('Two-letter lowercase country code (ISO 3166-1), e.g. "pl", "nl". REQUIRED when city is used; infer from the city name.'),
+    .describe('Two-letter lowercase country code, e.g. "pl". Required with city.'),
   latitude: z.number().min(-90).max(90).optional()
-    .describe('Latitude of a specific point (landmark, station, address). MANDATORY (together with longitude) whenever the user mentions a specific place or distance, e.g. "near the Palace of Culture", "within 2 km of the airport". You must supply the REAL coordinates yourself - never fall back to a plain city search and claim proximity.'),
+    .describe('Latitude returned by booking_find_landmark in this message - never typed from memory.'),
   longitude: z.number().min(-180).max(180).optional()
-    .describe('Longitude of a specific point. Must be used together with latitude.'),
+    .describe('Longitude, together with latitude.'),
   // Bez .default() - promien domyslny i poszerzanie ustala serwer (hotelSearch.ts, PROMIEN DOMYSLNY).
   radius_km: z.number().min(0.1).max(50).optional()
     .describe('Search radius in kilometres around latitude/longitude. Pass ONLY when the user stated a distance; otherwise omit - the server applies its default. Only used with coordinates.'),
   checkin: z.string().regex(dateRegex).optional()
-    .describe('Check-in date in YYYY-MM-DD format. OPTIONAL - if the user did not give dates, DO NOT ask them; omit this and a default date about 3 months ahead will be used.'),
+    .describe('Check-in date YYYY-MM-DD. Optional - do not ask for dates; without them sample dates are used.'),
   checkout: z.string().regex(dateRegex).optional()
     .describe('Check-out date in YYYY-MM-DD format. OPTIONAL - omit if the user did not give dates.'),
   adults: z.number().int().min(1).max(30).default(1)
@@ -23,50 +23,35 @@ export const HotelSearchInputSchema = z.object({
   rooms: z.number().int().min(1).max(30).default(1)
     .describe("Number of rooms (default: 1)"),
   children_count: z.number().int().min(0).max(10).optional()
-    .describe("Number of children staying. Set together with children_ages when the user mentions travelling with children."),
+    .describe("Number of children - always together with children_ages."),
   children_ages: z.array(z.number().int().min(0).max(17)).optional()
-    .describe("Age of each child, e.g. [3, 8] for two children aged 3 and 8. Length must match children_count."),
+    .describe("Age of each child, e.g. [3, 8]. Ask the user if ages are not known."),
   currency: z.string().min(3).max(3).default("PLN")
     .describe('3-letter currency code, e.g. "PLN", "EUR"'),
   max_price_per_night: z.number().positive().optional()
-    .describe("Maximum price PER NIGHT the user is willing to pay, in the given currency. Set this whenever the user mentions a price limit. This is per night, not total stay."),
+    .describe("Maximum price per night (not per stay) in the given currency."),
   min_price_per_night: z.number().positive().optional()
-    .describe("Minimum price PER NIGHT, in the given currency. Set only if the user gives a lower bound, e.g. 'at least 200 PLN a night'."),
+    .describe("Minimum price per night, only if the user gives a lower bound."),
   breakfast_only: z.boolean().default(false)
-    .describe("Only return hotels where breakfast is INCLUDED in the room price at no extra cost. " +
-      "IMPORTANT: set this ONLY when the user explicitly says breakfast must be included/free/bundled " +
-      "in the price (e.g. 'breakfast included', 'ze śniadaniem w cenie', 'free breakfast'). " +
-      "Do NOT set this for a generic mention of breakfast without that qualifier (e.g. plain " +
-      "'with breakfast' / 'ze śniadaniem') - most hotels offer breakfast as a PAID add-on, which " +
-      "this filter would incorrectly exclude. If unsure whether the user means included-only or " +
-      "breakfast-available-for-a-fee-is-fine, leave this false and mention in your answer which " +
-      "hotels include breakfast vs charge extra for it, rather than filtering them out."),
+    .describe("Only hotels with breakfast included in the price - set only for 'śniadanie w cenie' / 'breakfast included', not for a plain 'ze śniadaniem'."),
   free_cancellation_only: z.boolean().default(false)
     .describe("Only return hotels with free cancellation"),
   min_stars: z.number().int().min(1).max(5).optional()
-    .describe("Star rating (1-5). By default this is a MINIMUM threshold (e.g. min_stars:3 returns " +
-      "3-4-5 star hotels). Only set if user explicitly requests it."),
+    .describe("Star category 1-5 (a minimum unless exact_stars is true)."),
   exact_stars: z.boolean().default(false)
-    .describe("Set true ONLY when the user names ONE specific star category (e.g. 'hotel " +
-      "2-gwiazdkowy', 'a 3-star hotel', 'dokładnie 4 gwiazdki') rather than a floor like " +
-      "'co najmniej 3 gwiazdki' or '4 stars or more'. When true, min_stars is treated as an EXACT " +
-      "match, not a minimum. Default false means min_stars behaves as a minimum threshold."),
+    .describe("true when the user names one category ('hotele 3*', '4-gwiazdkowy'); false for 'co najmniej 3*', '3+'."),
   min_review_score: z.number().min(1).max(10).optional()
-    .describe("Minimum guest review score out of 10. Set whenever the user asks for well-reviewed/highly-rated hotels, e.g. 'reviews above 8' -> 8."),
+    .describe("Minimum guest rating out of 10, e.g. 'ocena powyżej 8' -> 8."),
   required_facilities: z.array(z.enum([
     "pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed"
   ])).optional()
-    .describe("List of amenities the hotel MUST have, enforced by the server. Set this whenever the user asks for hotels with a specific amenity. MUST use EXACTLY these string values (nothing else is valid): \"pool\", \"gym\", \"parking\", \"wifi\", \"air_conditioning\", \"spa\", \"restaurant\", \"sauna\", \"pets_allowed\". Examples: 'hotels with a pool' -> [\"pool\"], 'with pool and gym' -> [\"pool\", \"gym\"], 'that accept pets' / 'pet-friendly' / 'dog-friendly' -> [\"pets_allowed\"] (NOT \"pets\" - that value does not exist and will be rejected). Do NOT try to verify amenities by calling booking_get_hotel_details on each result instead - use this parameter so the search itself is filtered correctly."),
+    .describe("Amenities the hotel must have, only these values: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed (pets -> pets_allowed)."),
   exclude_hostels: z.boolean().default(true)
-    .describe("Exclude hostels and apartment-style accommodations from results, keeping only proper " +
-      "hotels. TRUE BY DEFAULT - set to false explicitly only if the user says hostels/apartments are " +
-      "fine too, or asks for 'any type of accommodation'. Do not silently leave hostels/apartments in " +
-      "results just because the user said 'hotels' generically - that word alone means this should " +
-      "stay true."),
+    .describe("Hotels only (no hostels, apartments, villas, B&Bs). Default true; false only if the user accepts those."),
   results_limit: z.number().int().min(1).max(100).default(10)
-    .describe("Maximum number of hotels to return, up to 100. Set this when the user asks for a specific number of results, e.g. 'show me 50 hotels' -> 50."),
+    .describe("Only when the user asks for fewer than 10 hotels ('pokaż 5 najlepszych' -> 5). For more, results come in batches - do not set."),
   sort_by: z.string().default("popularity")
-    .describe('Sort by: "price", "review_score", "distance", "stars", or "popularity". "distance" works best with coordinates.'),
+    .describe('price, review_score, distance (around a point), stars or popularity (default).'),
 });
 
 export type HotelSearchInput = z.infer<typeof HotelSearchInputSchema>;
