@@ -136,13 +136,12 @@ export class BookingApiClient {
     const responseText = await response.text();
 
     if (!isCityLookup) {
+      // Linia ze statusem, liczba rekordow i czasem - zawsze (takze w trybie debug).
+      let count = "?";
+      try { const d = JSON.parse(responseText)?.data; count = Array.isArray(d) ? String(d.length) : "?"; } catch { /* pomijamy */ }
+      console.error("=== Booking.com " + response.status + ", " + count + " rekordow, " + (Date.now() - started) + " ms");
       if (LOG_DEBUG || !response.ok) {
-        console.error("=== Booking.com response status: " + response.status);
         console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
-      } else {
-        let count = "?";
-        try { const d = JSON.parse(responseText)?.data; count = Array.isArray(d) ? String(d.length) : "?"; } catch { /* pomijamy */ }
-        console.error("=== Booking.com " + response.status + ", " + count + " rekordow, " + (Date.now() - started) + " ms");
       }
     }
 
