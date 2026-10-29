@@ -8,7 +8,7 @@
 // Emilii przy zwyklym wyszukiwaniu hoteli), nie tracac istotnej tresci.
 export function sanitizeForOrchestrator(text: string, maxLength = 800): string {
   let cleaned = text
-    .replace(/["""]/g, "'")
+    .replace(/["\u201C\u201D\u201E]/g, "'")
     .replace(/\s{3,}/g, " ");
   if (cleaned.length > maxLength) {
     cleaned = cleaned.slice(0, maxLength) + "...";

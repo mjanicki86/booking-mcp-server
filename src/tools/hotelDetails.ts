@@ -522,7 +522,9 @@ export function registerHotelDetailsTool(
         // tresci warstwy orkiestracji (blad "ContentFiltered" zglaszany
         // przez Emilie przy zwyklym wyszukiwaniu hoteli).
         const description = rawDescription ? sanitizeForOrchestrator(rawDescription, 800) : null;
-        const importantInfo = extractText(hotel.description?.important_information) ?? null;
+        // Tekst z API jak opis - tez czyszczony (ContentFiltered, przeglad pkt 18).
+        const rawImportantInfo = extractText(hotel.description?.important_information) ?? null;
+        const importantInfo = rawImportantInfo ? sanitizeForOrchestrator(rawImportantInfo, 800) : null;
         const checkinFrom = hotel.checkin_checkout_times?.checkin_from ?? null;
         const checkinTo = hotel.checkin_checkout_times?.checkin_to ?? null;
         const checkoutFrom = hotel.checkin_checkout_times?.checkout_from ?? null;

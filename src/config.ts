@@ -14,10 +14,11 @@ function requireEnv(name: string): string {
 }
 
 export const config = {
-  // Adres API Booking.com - produkcyjny jako domyślny.
+  // Adres API Booking.com - produkcyjny jako domyślny. Kod jest dopasowany do 3.1
+  // (ksztalt odpowiedzi, paginacja) - 3.2 nie byl testowany.
   // Można go nadpisać w Azure zmienną BOOKING_API_BASE_URL (np. na sandbox).
   bookingApiBaseUrl:
-    process.env.BOOKING_API_BASE_URL ?? "https://demandapi.booking.com/3.2",
+    process.env.BOOKING_API_BASE_URL ?? "https://demandapi.booking.com/3.1",
 
   // Hasła - MUSZĄ być ustawione w Azure, inaczej serwer się nie uruchomi.
   bookingApiKey: requireEnv("BOOKING_API_KEY"),
