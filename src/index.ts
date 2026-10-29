@@ -152,7 +152,12 @@ app.post("/mcp", async (req: Request, res: Response) => {
 
 // W trybie bezstanowym nie ma strumienia SSE (GET) ani sesji do zamkniecia
 // (DELETE) - zgodnie ze specyfikacja MCP odpowiadamy 405.
-app.get("/mcp", (_req: Request, res: Response) => {
+app.get("/mcp", (req: Request, res: Response) => {
+  // Zakladka "Testuj" konektora w Power Apps wysyla GET - logujemy naglowki,
+  // zeby sprawdzic, czy polaczenie dokleja mcp-key.
+  const convHeader = req.headers["conversation-id"];
+  console.error("=== GET /mcp (405) - DIAG naglowki: mcp-key=" + checkAccessKey(req.headers["mcp-key"]) +
+    ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
   res.status(405).set("Allow", "POST").json({
     jsonrpc: "2.0",
     error: { code: -32000, message: "Method not allowed (stateless server)" },
