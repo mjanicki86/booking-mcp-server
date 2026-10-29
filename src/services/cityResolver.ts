@@ -16,6 +16,53 @@ interface CachedCity {
 
 const cityCache = new Map<string, CachedCity>();
 
+// === LISTA MIAST KRAJU W CACHE (2026-10-29, przeglad optymalizacji) ===
+// resolveCityId i searchCities przechodzily CALA liste miast kraju przy kazdym
+// wywolaniu (Polska: kilka stron po 1000, ~1,3 s). Prewarm 7 miast robil to
+// 7 razy przy kazdym starcie kontenera, a booking_search_cities i "alternatywne
+// miasta" w booking_find_hotel - przy kazdym uzyciu. Teraz lista kraju jest
+// pobierana raz na 24 h i wspolna dla wszystkich.
+interface CountryCity { id: number; name: string; norm: string; variants: string[] }
+const COUNTRY_CITIES_TTL_MS = 24 * 60 * 60 * 1000;
+const countryCities = new Map<string, { at: number; list: CountryCity[] }>();
+const countryInFlight = new Map<string, Promise<CountryCity[]>>();
+
+async function loadCountryCities(client: BookingApiClient, country: string): Promise<CountryCity[]> {
+  const cached = countryCities.get(country);
+  if (cached && Date.now() - cached.at < COUNTRY_CITIES_TTL_MS) return cached.list;
+  const pending = countryInFlight.get(country);
+  if (pending) return pending;
+  const p = (async () => {
+    const started = Date.now();
+    const list: CountryCity[] = [];
+    let body: any = { country, rows: CITIES_ROWS_PER_PAGE };
+    let complete = false;
+    let pages = 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const resp = await client.post<any>("/common/locations/cities", body);
+      pages++;
+      for (const entry of (resp.data ?? []) as any[]) {
+        const name = extractName(entry.name);
+        if (!name || entry.id == null) continue;
+        list.push({ id: entry.id, name, norm: normalizeText(name), variants: extractAllNameVariants(entry.name) });
+      }
+      if (!resp.next_page) { complete = true; break; }
+      // Przy paginacji "page" musi byc jedynym polem.
+      body = { page: resp.next_page };
+    }
+    console.error("=== Lista miast kraju \"" + country + "\": " + list.length + " miast, " + pages + " stron, " +
+      (Date.now() - started) + " ms" + (complete ? "" : " (NIEKOMPLETNA - nie zapisuje w cache)"));
+    if (complete) countryCities.set(country, { at: Date.now(), list });
+    return list;
+  })();
+  countryInFlight.set(country, p);
+  try {
+    return await p;
+  } finally {
+    countryInFlight.delete(country);
+  }
+}
+
 const MAX_PAGES = 200;
 // Booking.com API /common/locations/cities akceptuje "rows" do 1000
 // (wielokrotnosc 10), domyslnie tylko 100. Ustawienie maksimum redukuje
@@ -111,35 +158,13 @@ export async function resolveCityId(
     };
   }
 
-  let body: any = { country: normCountry, rows: CITIES_ROWS_PER_PAGE };
+  // Cala lista miast kraju (z cache) - WSZYSTKIE dokladne dopasowania, zeby
+  // wykryc kazdy duplikat nazwy (patrz komentarz nad funkcja).
   const exactMatches: CachedCity[] = [];
-
-  // UWAGA: przechodzimy WSZYSTKIE strony kraju (nie przerywamy na
-  // pierwszym trafieniu) - to jedyny niezawodny sposob, by wykryc
-  // KAZDY mozliwy duplikat nazwy, niezaleznie od tego gdzie w kolejnosci
-  // paginacji Booking.com go umiesci. Dzieki rows:1000 (zamiast domyslnych
-  // 100) liczba potrzebnych stron jest ~10x mniejsza niz wczesniej.
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const resp = await client.post<any>("/common/locations/cities", body);
-    const data: any[] = resp.data ?? [];
-
-    for (const entry of data) {
-      const name = extractName(entry.name);
-      if (!name || entry.id == null) continue;
-      const variants = extractAllNameVariants(entry.name);
-
-      // CELOWO NIE cache'ujemy tutaj miast innych niz to bedace celem
-      // tego wywolania - patrz duzy komentarz nad funkcja.
-      if (normalizeText(name) === normName && !exactMatches.some((m) => m.city_id === entry.id)) {
-        exactMatches.push({ city_id: entry.id, name: name, name_variants: variants });
-      }
+  for (const c of await loadCountryCities(client, normCountry)) {
+    if (c.norm === normName && !exactMatches.some((m) => m.city_id === c.id)) {
+      exactMatches.push({ city_id: c.id, name: c.name, name_variants: c.variants });
     }
-
-    if (!resp.next_page) break;
-    // WAZNE: przy paginacji "page" musi byc jedynym polem (podobnie jak
-    // w /accommodations/search) - token juz koduje oryginalne parametry
-    // (w tym rows), wiec nie trzeba (i nie mozna) go ponownie podawac.
-    body = { page: resp.next_page };
   }
 
   if (exactMatches.length === 0) {
@@ -181,6 +206,9 @@ export async function resolveCityId(
   // miasta bedacego bezposrednim celem TEGO wywolania.
   const finalKey = normCountry + ":" + normalizeText(chosen.name);
   cityCache.set(finalKey, chosen);
+  // Takze pod kluczem zapytania (inna pisownia tej samej nazwy) - bez tego kazde
+  // takie zapytanie liczylo duplikaty od nowa (zapytania /search).
+  cityCache.set(cacheKey, chosen);
 
   return {
     city_id: chosen.city_id,
@@ -205,26 +233,12 @@ export async function searchCities(
   const results: Omit<CitySearchResult, "name_variants">[] = [];
   const seen = new Set<number>();
 
-  let body: any = { country: normCountry, rows: CITIES_ROWS_PER_PAGE };
-
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const resp = await client.post<any>("/common/locations/cities", body);
-    const data: any[] = resp.data ?? [];
-
-    for (const entry of data) {
-      const name = extractName(entry.name);
-      if (!name || entry.id == null) continue;
-
-      if (normalizeText(name).indexOf(normQuery) !== -1 && !seen.has(entry.id)) {
-        seen.add(entry.id);
-        results.push({ city_id: entry.id, name: name, country: normCountry });
-        if (results.length >= limit) return results;
-      }
+  for (const c of await loadCountryCities(client, normCountry)) {
+    if (c.norm.indexOf(normQuery) !== -1 && !seen.has(c.id)) {
+      seen.add(c.id);
+      results.push({ city_id: c.id, name: c.name, country: normCountry });
+      if (results.length >= limit) return results;
     }
-
-    if (!resp.next_page) break;
-    body = { page: resp.next_page };
   }
-
   return results;
 }

@@ -10,6 +10,43 @@ export interface LandmarkSearchResult {
 
 const MAX_PAGES = 50;
 
+// === CACHE (2026-10-29, przeglad optymalizacji) ===
+// Lista landmarkow miasta jest statyczna, a booking_find_landmark jest wolany
+// w kazdej turze (2 zapytania na wywolanie, np. Wawel). Teraz lista miasta
+// jest pobierana raz na 24 h. Wynik geokodowania (Nominatim) tez 24 h - to
+// rowniez wymog regulaminu OSM (bez powtarzania tych samych zapytan).
+const LANDMARKS_TTL_MS = 24 * 60 * 60 * 1000;
+const cityLandmarks = new Map<number, { at: number; list: any[] }>();
+const landmarksInFlight = new Map<number, Promise<any[]>>();
+const GEOCODE_TTL_MS = 24 * 60 * 60 * 1000;
+const geocodeCache = new Map<string, { at: number; result: LandmarkSearchResult | null }>();
+
+async function loadCityLandmarks(client: BookingApiClient, cityId: number): Promise<any[]> {
+  const cached = cityLandmarks.get(cityId);
+  if (cached && Date.now() - cached.at < LANDMARKS_TTL_MS) return cached.list;
+  const pending = landmarksInFlight.get(cityId);
+  if (pending) return pending;
+  const p = (async () => {
+    const list: any[] = [];
+    let body: any = { city: cityId, languages: ["en-gb", "pl", "de"] };
+    let complete = false;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const resp = await client.post<any>("/common/locations/landmarks", body);
+      list.push(...((resp.data ?? []) as any[]));
+      if (!resp.next_page) { complete = true; break; }
+      body = { page: resp.next_page };
+    }
+    if (complete) cityLandmarks.set(cityId, { at: Date.now(), list });
+    return list;
+  })();
+  landmarksInFlight.set(cityId, p);
+  try {
+    return await p;
+  } finally {
+    landmarksInFlight.delete(cityId);
+  }
+}
+
 function tokenize(name: string): string[] {
   return normalizeText(name)
     .replace(/[^a-z0-9\s]/g, " ")
@@ -127,13 +164,10 @@ export async function searchLandmarks(
   const results: LandmarkSearchResult[] = [];
   const seen = new Set<number>();
 
-  let body: any = { city: cityId, languages: ["en-gb", "pl", "de"] };
-
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const resp = await client.post<any>("/common/locations/landmarks", body);
-    const data: any[] = resp.data ?? [];
-
-    for (const entry of data) {
+  const cachedBefore = cityLandmarks.has(cityId);
+  const all = await loadCityLandmarks(client, cityId);
+  {
+    for (const entry of all) {
       const displayName = extractName(entry.name);
       const allVariants = extractAllNameVariants(entry.name);
       const lat = entry.coordinates?.latitude;
@@ -150,15 +184,13 @@ export async function searchLandmarks(
       if (matches && !seen.has(entry.id)) {
         seen.add(entry.id);
         results.push({ landmark_id: entry.id, name: displayName, latitude: lat, longitude: lon });
-        if (results.length >= limit) return results;
+        if (results.length >= limit) break;
       }
     }
-
-    if (!resp.next_page) break;
-    body = { page: resp.next_page };
   }
 
-  console.error("=== DIAG searchLandmarks: query=\"" + query + "\" (efektywne tokeny: " +
+  console.error("=== DIAG searchLandmarks: query=\"" + query + "\"" + (cachedBefore ? " [lista miasta z cache]" : "") +
+    " (efektywne tokeny: " +
     JSON.stringify(effectiveQueryTokens) + ") -> " + results.length +
     " dopasowan: " + JSON.stringify(results.map((r) => r.name)));
 
@@ -166,6 +198,20 @@ export async function searchLandmarks(
 }
 
 export async function geocodeAddress(query: string, cityName: string): Promise<LandmarkSearchResult | null> {
+  const cacheKey = normalizeText(query) + "|" + normalizeText(cityName);
+  const hit = geocodeCache.get(cacheKey);
+  // Brak wyniku (albo blad sieci) pamietamy tylko 10 min - zeby chwilowa awaria nie trwala dobe.
+  if (hit && Date.now() - hit.at < (hit.result ? GEOCODE_TTL_MS : 10 * 60 * 1000)) return hit.result;
+  const result = await geocodeUncached(query, cityName);
+  geocodeCache.set(cacheKey, { at: Date.now(), result });
+  if (geocodeCache.size > 2000) {
+    const oldest = geocodeCache.keys().next().value;
+    if (oldest !== undefined) geocodeCache.delete(oldest);
+  }
+  return result;
+}
+
+async function geocodeUncached(query: string, cityName: string): Promise<LandmarkSearchResult | null> {
   const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
     encodeURIComponent(query + ", " + cityName);
   try {

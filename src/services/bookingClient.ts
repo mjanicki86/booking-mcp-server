@@ -55,6 +55,31 @@ let reviewsDisabledUntil = 0;
 const SEARCH_MAX_PAGES = 5;
 const ID_CHUNK = 100;
 
+// === CACHE WYNIKOW (2026-10-29, przeglad optymalizacji) ===
+// 1) Surowe strony /accommodations/search po tresci zapytania - 5 min. Agent
+//    potrafi w jednej turze (albo w dopytaniu o parking) wyslac identyczne
+//    wyszukiwanie drugi raz; ceny i dostepnosc w 5 min sie nie zmieniaja.
+// 2) /accommodations/details po ID - 6 h. To dane statyczne (nazwa, typ,
+//    gwiazdki, udogodnienia, parking, wspolrzedne). Przy kaskadzie zapytan
+//    ("teraz 4*", "bez sniadania", "w promieniu 2 km") te same obiekty
+//    wracaja co ture - wczesniej kazda tura pytala o nie ponownie (1-4 zapytania).
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX = 200;
+const DETAILS_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DETAILS_CACHE_MAX = 5000;
+
+interface SearchPages { first: any; hotels: any[]; pages: number; nextPage?: string; at: number }
+const searchCache = new Map<string, SearchPages>();
+const detailsCache = new Map<number, { at: number; d: any }>();
+
+function trimMap<K, V>(m: Map<K, V>, max: number): void {
+  while (m.size > max) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
+
 function chunk<T>(list: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
@@ -184,6 +209,33 @@ export class BookingApiClient {
   async searchAccommodations(
     request: AccommodationSearchRequest
   ): Promise<SearchResult & { reviews_fetch_failed?: boolean }> {
+    const searchKey = JSON.stringify(request);
+    const cachedSearch = searchCache.get(searchKey);
+    const fromCache = !!cachedSearch && Date.now() - cachedSearch.at < SEARCH_CACHE_TTL_MS;
+    const pagesData = fromCache ? cachedSearch! : await this.fetchSearchPages(request);
+    if (fromCache) {
+      console.error("=== DIAG search cache: to samo zapytanie sprzed " +
+        Math.round((Date.now() - cachedSearch!.at) / 1000) + " s - " + cachedSearch!.hotels.length +
+        " obiektow bez zapytan do Booking.com.");
+    } else {
+      searchCache.delete(searchKey);
+      searchCache.set(searchKey, pagesData);
+      trimMap(searchCache, SEARCH_CACHE_MAX);
+    }
+    const raw = pagesData.first;
+    const rawHotels: any[] = pagesData.hotels;
+    const pages = pagesData.pages;
+    const nextPage = pagesData.nextPage;
+    const truncated = !!nextPage;
+    if (truncated && !fromCache) {
+      console.error("=== OSTRZEZENIE: po " + pages + " stronach (" + rawHotels.length + " obiektow) Booking.com ma " +
+        "jeszcze kolejne - lista NIEKOMPLETNA.");
+    }
+    return this.enrichSearch(raw, rawHotels, pages, nextPage, truncated);
+  }
+
+  // Wszystkie strony /accommodations/search (do SEARCH_MAX_PAGES).
+  private async fetchSearchPages(request: AccommodationSearchRequest): Promise<SearchPages> {
     const raw = await this.post<any>("/accommodations/search", request);
     const rawHotels: any[] = [];
     const seenIds = new Set<number>();
@@ -215,12 +267,12 @@ export class BookingApiClient {
       console.error("=== DIAG search paging: strona " + pages + " - +" + (rawHotels.length - before) +
         " obiektow (lacznie " + rawHotels.length + "), next_page=" + (nextPage ? "jest" : "brak"));
     }
-    const truncated = !!nextPage;
-    if (truncated) {
-      console.error("=== OSTRZEZENIE: po " + pages + " stronach (" + rawHotels.length + " obiektow) Booking.com ma " +
-        "jeszcze kolejne - lista NIEKOMPLETNA.");
-    }
+    return { first: raw, hotels: rawHotels, pages, nextPage, at: Date.now() };
+  }
 
+  private async enrichSearch(
+    raw: any, rawHotels: any[], pages: number, nextPage: string | undefined, truncated: boolean
+  ): Promise<SearchResult & { reviews_fetch_failed?: boolean }> {
     const ids = rawHotels
       .map((h: any) => h.hotel_id ?? h.id)
       .filter((id: any) => id != null);
@@ -261,12 +313,30 @@ export class BookingApiClient {
     const detailsById = new Map<number, any>();
 
     if (ids.length > 0) {
+      // Z cache tylko brakujace ID; paczki po 100 rownolegle.
       const fetchDetails = async () => {
+        const now = Date.now();
         const data: any[] = [];
-        for (const part of chunk(ids, ID_CHUNK)) {
-          const resp = await this.post<any>("/accommodations/details", { accommodations: part, extras: ["facilities"] });
-          data.push(...(resp.data ?? resp.result ?? []));
+        const missing: number[] = [];
+        for (const id of ids) {
+          const c = detailsCache.get(id);
+          if (c && now - c.at < DETAILS_CACHE_TTL_MS) data.push(c.d);
+          else missing.push(id);
         }
+        const parts = await Promise.all(chunk(missing, ID_CHUNK).map((part) =>
+          this.post<any>("/accommodations/details", { accommodations: part, extras: ["facilities"] })));
+        for (const resp of parts) {
+          for (const d of (resp.data ?? resp.result ?? []) as any[]) {
+            data.push(d);
+            if (d?.id != null) {
+              detailsCache.delete(d.id);
+              detailsCache.set(d.id, { at: now, d });
+            }
+          }
+        }
+        trimMap(detailsCache, DETAILS_CACHE_MAX);
+        console.error("=== DIAG details cache: " + (ids.length - missing.length) + " z cache, " + missing.length +
+          " z API (" + parts.length + " zapytan).");
         return { data };
       };
 
