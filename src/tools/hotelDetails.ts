@@ -335,11 +335,50 @@ export interface ParkingInfo {
   details: any[] | null;
 }
 
+function parkingInfoFromDetails(h: any, names: FacilityNames | null): ParkingInfo {
+  const currency: string | null = typeof h.currency === "string" ? h.currency : null;
+  const texts: string[] = [];
+  if (Array.isArray(h.facilities)) {
+    for (const f of h.facilities) {
+      const t = facilityToText(f, names?.accommodation ?? null, FACILITY_NAMES);
+      if (t) texts.push(t);
+    }
+  }
+  return {
+    summary: buildParkingSummary(h.facility_details, currency, texts),
+    kind: parkingKind(h.facility_details, texts),
+    details: parseParkingDetails(h.facility_details, currency),
+  };
+}
+
+// (2026-10-29, przeglad pkt 7) preloaded = surowe /details z wyszukiwania
+// (bookingClient.searchAccommodations pyta o ten sam endpoint z tymi samymi
+// extras). Dla obiektow, ktore tam sa, nie pytamy API drugi raz.
 export async function fetchParkingSummaries(
-  hotelIds: number[]
+  hotelIds: number[],
+  preloaded?: Map<number, any>
 ): Promise<{ byId: Map<number, ParkingInfo>; failed: boolean }> {
   const byId = new Map<number, ParkingInfo>();
   if (hotelIds.length === 0) return { byId, failed: false };
+  let fromPreloaded = 0;
+  if (preloaded && preloaded.size > 0) {
+    const names = parkingApiCreds
+      ? await loadFacilityNames(parkingApiCreds.apiKey, parkingApiCreds.affiliateId)
+      : null;
+    for (const id of hotelIds) {
+      const h = preloaded.get(id);
+      if (h) {
+        byId.set(id, parkingInfoFromDetails(h, names));
+        fromPreloaded++;
+      }
+    }
+  }
+  const missingIds = hotelIds.filter((id) => !byId.has(id));
+  if (missingIds.length === 0) {
+    console.error("=== DIAG parking dla listy: " + byId.size + " z " + hotelIds.length +
+      " hoteli z danych wyszukiwania, bez dodatkowego zapytania /details.");
+    return { byId, failed: false };
+  }
   if (!parkingApiCreds) {
     console.error("=== OSTRZEZENIE fetchParkingSummaries: brak danych dostepowych " +
       "(registerHotelDetailsTool nie zostal wywolany) - pomijam parking dla listy.");
@@ -350,8 +389,8 @@ export async function fetchParkingSummaries(
   let failed = false;
   let withStructured = 0;
 
-  for (let i = 0; i < hotelIds.length; i += DETAILS_MAX_IDS_PER_REQUEST) {
-    const chunk = hotelIds.slice(i, i + DETAILS_MAX_IDS_PER_REQUEST);
+  for (let i = 0; i < missingIds.length; i += DETAILS_MAX_IDS_PER_REQUEST) {
+    const chunk = missingIds.slice(i, i + DETAILS_MAX_IDS_PER_REQUEST);
     try {
       const response = await fetch(config.bookingApiBaseUrl + "/accommodations/details", {
         method: "POST",
@@ -374,21 +413,7 @@ export async function fetchParkingSummaries(
       const names = await facilityNamesPromise;
       for (const h of list) {
         if (h?.id == null) continue;
-        const currency: string | null = typeof h.currency === "string" ? h.currency : null;
-        const texts: string[] = [];
-        if (Array.isArray(h.facilities)) {
-          for (const f of h.facilities) {
-            const t = facilityToText(f, names?.accommodation ?? null, FACILITY_NAMES);
-            if (t) texts.push(t);
-          }
-        }
-        const details = parseParkingDetails(h.facility_details, currency);
-        if (details) withStructured++;
-        byId.set(h.id, {
-          summary: buildParkingSummary(h.facility_details, currency, texts),
-          kind: parkingKind(h.facility_details, texts),
-          details,
-        });
+        byId.set(h.id, parkingInfoFromDetails(h, names));
       }
     } catch (err) {
       console.error("=== BLAD parking dla listy: wyjatek: " + (err instanceof Error ? err.message : String(err)));
@@ -396,8 +421,10 @@ export async function fetchParkingSummaries(
     }
   }
 
+  for (const v of byId.values()) if (v.details) withStructured++;
   console.error("=== DIAG parking dla listy: " + byId.size + " z " + hotelIds.length +
-    " hoteli ma dane z /details, " + withStructured +
+    " hoteli ma dane z /details (" + fromPreloaded + " z wyszukiwania, " + (byId.size - fromPreloaded) +
+    " dociagniete), " + withStructured +
     " ze szczegolami parkingu (facility_details.parking_facilities)" +
     (failed ? ", CZESC ZAPYTAN NIEUDANA" : "") + ".");
   return { byId, failed };

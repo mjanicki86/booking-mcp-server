@@ -77,6 +77,11 @@ export interface SearchResult {
   // mylacego falszywego negatywu (przypadek Eweliny: zwierzeta+sniadanie
   // w Gdansku dawaly "brak wynikow" mimo dostepnych hoteli).
   facilities_fetch_failed: boolean;
+  // (2026-10-29) Czy Booking.com mial jeszcze kolejne strony po SEARCH_MAX_PAGES.
+  truncated?: boolean;
+  pages_fetched?: number;
+  // Surowe odpowiedzi /accommodations/details (extras: facilities) po ID.
+  details_by_id?: Map<number, any>;
 }
 export interface BookingApiError {
   status: number;

@@ -44,6 +44,23 @@ const reviewScoreCache = new Map<number, CachedReviewScore>();
 const REVIEWS_DISABLE_MS = 60 * 60 * 1000;
 let reviewsDisabledUntil = 0;
 
+// === KOMPLETNOSC WYNIKOW (2026-10-29, przeglad kodu pkt 2) ===
+// /accommodations/search zwraca max `rows` (100) obiektow na strone i token
+// next_page. Wczesniej pobieralismy tylko 1. strone - w centrum Krakowa przy
+// 1-2 km przychodzilo 96-97 obiektow (prawie limit), a hostele/apartamenty
+// odpadaja dopiero u nas, wiec czesc hoteli mogla w ogole nie trafic na liste.
+// Teraz dociagamy kolejne strony do SEARCH_MAX_PAGES (500 obiektow).
+// /details i oceny pytamy paczkami po ID_CHUNK - jedno zapytanie z kilkuset ID
+// nie bylo dotad testowane.
+const SEARCH_MAX_PAGES = 5;
+const ID_CHUNK = 100;
+
+function chunk<T>(list: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
 export class BookingApiClient {
   private readonly apiKey: string;
   private readonly affiliateId: string;
@@ -131,8 +148,11 @@ export class BookingApiClient {
       missing.length + " do pobrania z API.");
 
     try {
-      const raw = await this.post<any>(REVIEWS_ENDPOINT, { accommodations: missing });
-      const data: any[] = raw.data ?? raw.result ?? [];
+      const data: any[] = [];
+      for (const part of chunk(missing, ID_CHUNK)) {
+        const raw = await this.post<any>(REVIEWS_ENDPOINT, { accommodations: part });
+        data.push(...(raw.data ?? raw.result ?? []));
+      }
       let withScore = 0;
       for (const r of data) {
         if (r?.id == null) continue;
@@ -165,13 +185,41 @@ export class BookingApiClient {
     request: AccommodationSearchRequest
   ): Promise<SearchResult & { reviews_fetch_failed?: boolean }> {
     const raw = await this.post<any>("/accommodations/search", request);
-    const rawHotels: any[] = raw.data ?? raw.result ?? raw.hotels ?? [];
+    const rawHotels: any[] = [];
+    const seenIds = new Set<number>();
+    const addPage = (resp: any) => {
+      for (const h of (resp.data ?? resp.result ?? resp.hotels ?? []) as any[]) {
+        const id = h?.hotel_id ?? h?.id;
+        if (id == null || seenIds.has(id)) continue;
+        seenIds.add(id);
+        rawHotels.push(h);
+      }
+    };
+    addPage(raw);
 
     // Token kolejnej strony - Booking.com zwraca go pod metadata.next_page
     // (v3.1/v3.2), ale sprawdzamy defensywnie też top-level next_page,
     // na wypadek innego kształtu odpowiedzi.
-    const nextPage: string | undefined =
-      raw.metadata?.next_page ?? raw.next_page ?? undefined;
+    const tokenOf = (resp: any): string | undefined => resp?.metadata?.next_page ?? resp?.next_page ?? undefined;
+    let nextPage: string | undefined = tokenOf(raw);
+    let pages = 1;
+    console.error("=== DIAG search paging: strona 1 - " + rawHotels.length + " obiektow, next_page=" +
+      (nextPage ? "jest" : "brak"));
+    while (nextPage && pages < SEARCH_MAX_PAGES) {
+      // Przy kolejnej stronie wolno wyslac WYLACZNIE {page} (patrz types.ts).
+      const more = await this.post<any>("/accommodations/search", { page: nextPage });
+      const before = rawHotels.length;
+      addPage(more);
+      pages++;
+      nextPage = tokenOf(more);
+      console.error("=== DIAG search paging: strona " + pages + " - +" + (rawHotels.length - before) +
+        " obiektow (lacznie " + rawHotels.length + "), next_page=" + (nextPage ? "jest" : "brak"));
+    }
+    const truncated = !!nextPage;
+    if (truncated) {
+      console.error("=== OSTRZEZENIE: po " + pages + " stronach (" + rawHotels.length + " obiektow) Booking.com ma " +
+        "jeszcze kolejne - lista NIEKOMPLETNA.");
+    }
 
     const ids = rawHotels
       .map((h: any) => h.hotel_id ?? h.id)
@@ -208,10 +256,19 @@ export class BookingApiClient {
     // wywolujacemu przez facilitiesFetchFailed, zamiast pozwalac na
     // mylace zero wynikow.
     let facilitiesFetchFailed = false;
+    // Surowe /details (z facility_details) - hotelSearch liczy z nich parking,
+    // zamiast drugi raz pytac /details o te same obiekty (przeglad pkt 7).
+    const detailsById = new Map<number, any>();
 
     if (ids.length > 0) {
-      const fetchDetails = () =>
-        this.post<any>("/accommodations/details", { accommodations: ids, extras: ["facilities"] });
+      const fetchDetails = async () => {
+        const data: any[] = [];
+        for (const part of chunk(ids, ID_CHUNK)) {
+          const resp = await this.post<any>("/accommodations/details", { accommodations: part, extras: ["facilities"] });
+          data.push(...(resp.data ?? resp.result ?? []));
+        }
+        return { data };
+      };
 
       let details: any = null;
       try {
@@ -241,6 +298,7 @@ export class BookingApiClient {
       if (details) {
         const detailsData: any[] = details.data ?? details.result ?? [];
         for (const d of detailsData) {
+          if (d?.id != null) detailsById.set(d.id, d);
           const nm = extractLocalizedText(d.name);
           if (d.id != null && nm) {
             namesById[d.id] = nm;
@@ -295,6 +353,9 @@ export class BookingApiClient {
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
       next_page: nextPage,
+      truncated: truncated,
+      pages_fetched: pages,
+      details_by_id: detailsById,
       facilities_fetch_failed: facilitiesFetchFailed,
       reviews_fetch_failed: reviewsFetchFailed,
     };

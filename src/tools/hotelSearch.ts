@@ -753,9 +753,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         console.error("=== CHECKPOINT: dane pobrane, " + result.hotels.length +
           " hoteli, rozpoczynam filtrowanie...");
-        if (result.hotels.length >= 100) {
-          console.error("=== OSTRZEZENIE: Booking.com zwrocil " + result.hotels.length + " hoteli (limit rows=" +
-            request.rows + ") - w tym obszarze moze byc ich wiecej niz pobrano.");
+        if (result.truncated) {
+          console.error("=== OSTRZEZENIE: lista niekompletna - Booking.com mial wiecej niz " + result.hotels.length +
+            " obiektow (" + result.pages_fetched + " stron).");
         }
 
         const stepBreakdown: { step: string; count: number }[] = [];
@@ -953,7 +953,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         let parkingFetchFailed = false;
         if (limitedAll.length > 0) {
           const ids = limitedAll.map(function (_h, i) { return hotels[i].hotel_id; });
-          const parking = await fetchParkingSummaries(ids);
+          const parking = await fetchParkingSummaries(ids, result.details_by_id);
           parkingFetchFailed = parking.failed;
           limitedAll.forEach(function (fh: any, i) {
             const info = parking.byId.get(hotels[i].hotel_id);
@@ -1169,6 +1169,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         if (datesAssumed) {
           output.dates_note = "User did not provide dates. These are SAMPLE prices for an assumed weekend (" + checkin + " to " + checkout + "). Tell the user these dates were assumed.";
+        }
+
+        if (result.truncated) {
+          output.completeness_note = "Booking.com has more than " + result.hotels.length + " properties for this search " +
+            "and only the first " + result.hotels.length + " were checked, so this list may be incomplete. Tell the user " +
+            "briefly and suggest narrowing the search (smaller radius, star category or price).";
         }
 
         output.parking_note = "Each hotel has 'parking_summary' and 'parking_kind' from Booking.com. ALWAYS include " +
