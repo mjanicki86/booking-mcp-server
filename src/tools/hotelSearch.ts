@@ -303,6 +303,18 @@ function snapToRecentPoint(scope: string, lat: number, lon: number): { lat: numb
   return { lat, lon, snappedFromM: null };
 }
 
+// Log pokazywanej paczki: pozycja, nazwa, gwiazdki, ocena/liczba opinii, cena.
+// Pozwala porownac to, co agent napisal uzytkownikowi, z tym, co dostal
+// (test 2026-10-29: w odpowiedzi agenta dwa hotele mialy identyczna ocene i
+// liczbe opinii - podejrzenie przepisywania wartosci miedzy pozycjami).
+function logBatchContents(label: string, hotels: any[], firstPosition: number): void {
+  const lines = hotels.map(function (h, i) {
+    return (h.position ?? firstPosition + i) + ". " + (h.name ?? "-") + " | " + (h.stars ?? "-") + "* | ocena " +
+      (h.review_score ?? "-") + " (" + (h.review_count ?? "-") + " opinii) | " + (h.price_total ?? "-") + " " + (h.currency ?? "");
+  });
+  console.error("=== DIAG paczka " + label + ":\n" + lines.join("\n"));
+}
+
 // Minimalny odstep miedzy wydaniem paczki a prosba o kolejna. Prod
 // 2026-10-22: model w JEDNEJ turze sam wolal continue_previous co 2 s
 // (paczka 1 -> 2 -> 3) i wypisywal wszystkie 30 hoteli naraz. Czlowiek nie
@@ -349,6 +361,7 @@ function serveNextBatch(key: string, entry: StoredResultSet, how: string): any {
   console.error("=== DIAG paging: continue_previous (" + how + "), klucz " + key + ", paczka " + nextPage + "/" + pages +
     ", pozycje " + from + "-" + to + " z " + total + ": pierwszy=\"" + (batch[0]?.name ?? "-") +
     "\", ostatni=\"" + (batch[batch.length - 1]?.name ?? "-") + "\", bez zapytan do API.");
+  logBatchContents(from + "-" + to, batch, from);
   const out: any = {
     success: true,
     batch: nextPage,
@@ -1160,6 +1173,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           };
         }
 
+        logBatchContents("1-" + formatted.length, formatted, 1);
         const output: any = {
           success: true,
           location: locationLabel,

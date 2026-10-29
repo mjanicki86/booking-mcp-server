@@ -8,7 +8,7 @@ export const HotelSearchInputSchema = z.object({
   country: z.string().min(2).max(2).optional()
     .describe('Two-letter lowercase country code, e.g. "pl". Required with city.'),
   latitude: z.number().min(-90).max(90).optional()
-    .describe('Latitude returned by booking_find_landmark in this message - never typed from memory.'),
+    .describe('Usually omit - for a named place pass landmark_name instead. Only a latitude returned by a tool in this message, never typed from memory.'),
   longitude: z.number().min(-180).max(180).optional()
     .describe('Longitude, together with latitude.'),
   // Bez .default() - promien domyslny i poszerzanie ustala serwer (hotelSearch.ts, PROMIEN DOMYSLNY).
