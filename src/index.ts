@@ -29,6 +29,15 @@ const MCP_AUTH_MODE = (process.env.MCP_AUTH_MODE ?? "log").trim().toLowerCase();
 
 type KeyCheck = "zgodny" | "niezgodny" | "brak" | string;
 
+// Klucz moze przyjsc z polaczenia konektora ("mcp-key") albo z danych wejsciowych
+// narzedzia w Copilot Studio ("mcp-access-key" - inna nazwa, bo parametru o nazwie
+// "mcp-key" Copilot Studio nie pokazuje w Inputs, gdy polaczenie ma juz taki klucz).
+function accessKeyHeader(req: Request): unknown {
+  const fromInputs = req.headers["mcp-access-key"];
+  if (typeof fromInputs === "string" && fromInputs.length > 0) return fromInputs;
+  return req.headers["mcp-key"];
+}
+
 function checkAccessKey(header: unknown): KeyCheck {
   if (typeof header !== "string" || header.length === 0) return "brak";
   // Bez MCP_ACCESS_KEY nie ma z czym porownac, ale logujemy, czy klucz w ogole przychodzi.
@@ -87,9 +96,11 @@ app.post("/mcp", async (req: Request, res: Response) => {
   console.error("=== POST /mcp received ===");
   // (2026-10-29) Test nagłówków z konektora Copilot Studio: klucz dostępu (tylko
   // czy jest i jaką ma długość - nigdy wartość) oraz identyfikator rozmowy.
-  const keyCheck = checkAccessKey(req.headers["mcp-key"]);
+  const keyCheck = checkAccessKey(accessKeyHeader(req));
   const convHeader = req.headers["conversation-id"];
-  console.error("=== DIAG naglowki: mcp-key=" + keyCheck + " (tryb " + MCP_AUTH_MODE + ")" +
+  const keySource = typeof req.headers["mcp-access-key"] === "string" && (req.headers["mcp-access-key"] as string).length > 0
+    ? "mcp-access-key" : (typeof req.headers["mcp-key"] === "string" && (req.headers["mcp-key"] as string).length > 0 ? "mcp-key" : "-");
+  console.error("=== DIAG naglowki: klucz=" + keyCheck + " (z naglowka " + keySource + ", tryb " + MCP_AUTH_MODE + ")" +
     ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
   if (MCP_AUTH_MODE === "enforce" && MCP_ACCESS_KEY && keyCheck !== "zgodny") {
     console.error("=== Odrzucone: brak poprawnego klucza mcp-key (" + keyCheck + ") ===");
@@ -156,7 +167,7 @@ app.get("/mcp", (req: Request, res: Response) => {
   // Zakladka "Testuj" konektora w Power Apps wysyla GET - logujemy naglowki,
   // zeby sprawdzic, czy polaczenie dokleja mcp-key.
   const convHeader = req.headers["conversation-id"];
-  console.error("=== GET /mcp (405) - DIAG naglowki: mcp-key=" + checkAccessKey(req.headers["mcp-key"]) +
+  console.error("=== GET /mcp (405) - DIAG naglowki: mcp-key=" + checkAccessKey(accessKeyHeader(req)) +
     ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
   res.status(405).set("Allow", "POST").json({
     jsonrpc: "2.0",
