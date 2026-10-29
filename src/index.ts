@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express, { Request, Response } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { BookingApiClient } from "./services/bookingClient.js";
 import { registerHotelSearchTool } from "./tools/hotelSearch.js";
@@ -13,7 +14,31 @@ import { RequestContext, contextFromHeaders } from "./services/requestContext.js
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
+// ---------------------------------------------------------------------------
+// UWIERZYTELNIENIE (2026-10-29, przeglad kodu pkt 1)
+// Klucz przychodzi w naglowku "mcp-key" z polaczenia konektora Copilot Studio
+// (uwierzytelnianie kluczem API w konektorze - klucz zaszyfrowany w polaczeniu,
+// nie w definicji agenta). Po stronie serwera: sekret Azure -> MCP_ACCESS_KEY.
+// MCP_AUTH_MODE:
+//   "log" (domyslnie) - tylko logujemy zgodnosc klucza, przepuszczamy wszystko,
+//   "enforce"         - bez poprawnego klucza odpowiadamy 401.
+// Brak MCP_ACCESS_KEY = brak sprawdzania (jak przed zmiana).
+// ---------------------------------------------------------------------------
+const MCP_ACCESS_KEY = process.env.MCP_ACCESS_KEY ?? "";
+const MCP_AUTH_MODE = (process.env.MCP_AUTH_MODE ?? "log").trim().toLowerCase();
+
+type KeyCheck = "zgodny" | "niezgodny" | "brak" | "nie sprawdzam";
+
+function checkAccessKey(header: unknown): KeyCheck {
+  if (!MCP_ACCESS_KEY) return "nie sprawdzam";
+  if (typeof header !== "string" || header.length === 0) return "brak";
+  const a = Buffer.from(header, "utf8");
+  const b = Buffer.from(MCP_ACCESS_KEY, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b) ? "zgodny" : "niezgodny";
+}
+
 console.error("=== booking-mcp-server starting (stateless) ===");
+console.error("=== Uwierzytelnienie: " + (MCP_ACCESS_KEY ? "klucz ustawiony, tryb " + MCP_AUTH_MODE : "brak MCP_ACCESS_KEY - nie sprawdzam") + " ===");
 console.error("=== Booking API URL: " + config.bookingApiBaseUrl + " ===");
 
 const app = express();
@@ -61,11 +86,19 @@ app.post("/mcp", async (req: Request, res: Response) => {
   console.error("=== POST /mcp received ===");
   // (2026-10-29) Test nagłówków z konektora Copilot Studio: klucz dostępu (tylko
   // czy jest i jaką ma długość - nigdy wartość) oraz identyfikator rozmowy.
-  const keyHeader = req.headers["mcp-key"];
+  const keyCheck = checkAccessKey(req.headers["mcp-key"]);
   const convHeader = req.headers["conversation-id"];
-  console.error("=== DIAG naglowki: mcp-key=" +
-    (typeof keyHeader === "string" && keyHeader.length > 0 ? "jest (" + keyHeader.length + " znakow)" : "brak") +
+  console.error("=== DIAG naglowki: mcp-key=" + keyCheck + " (tryb " + MCP_AUTH_MODE + ")" +
     ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
+  if (MCP_AUTH_MODE === "enforce" && keyCheck !== "zgodny" && keyCheck !== "nie sprawdzam") {
+    console.error("=== Odrzucone: brak poprawnego klucza mcp-key (" + keyCheck + ") ===");
+    res.status(401).json({
+      jsonrpc: "2.0",
+      error: { code: -32001, message: "Unauthorized" },
+      id: (req.body && typeof req.body === "object" && (req.body as any).id) ?? null,
+    });
+    return;
+  }
   console.error("Body:", JSON.stringify(req.body));
 
   const body: any = req.body;
