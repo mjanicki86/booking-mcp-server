@@ -38,6 +38,21 @@ function accessKeyHeader(req: Request): unknown {
   return req.headers["mcp-key"];
 }
 
+// Copilot Studio kopiuje dane wejsciowe narzedzia (w tym klucz) do
+// params.sessionContext w initialize - log z 2026-10-29 14:22 mial klucz jawnym
+// tekstem. Przed zapisaniem body do logu maskujemy wszystko, co wyglada na sekret.
+const SECRET_FIELD_RE = /key|secret|token|password|authorization/i;
+
+function maskSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => maskSecrets(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = SECRET_FIELD_RE.test(k) && typeof v === "string" ? "***(" + v.length + ")" : maskSecrets(v, depth + 1);
+  }
+  return out;
+}
+
 function checkAccessKey(header: unknown): KeyCheck {
   if (typeof header !== "string" || header.length === 0) return "brak";
   // Bez MCP_ACCESS_KEY nie ma z czym porownac, ale logujemy, czy klucz w ogole przychodzi.
@@ -111,7 +126,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
     });
     return;
   }
-  console.error("Body:", JSON.stringify(req.body));
+  console.error("Body:", JSON.stringify(maskSecrets(req.body)));
 
   const body: any = req.body;
   const isJsonRpc = body && typeof body === "object" && body.jsonrpc !== undefined;
