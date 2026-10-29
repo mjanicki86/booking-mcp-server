@@ -1,5 +1,6 @@
 import { BookingApiClient } from "./bookingClient.js";
 import { normalizeText } from "./textNormalize.js";
+import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM } from "../constants.js";
 
 export interface CitySearchResult {
   city_id: number;
@@ -101,7 +102,7 @@ async function countHotelsForCity(client: BookingApiClient, cityId: number): Pro
     const co = new Date(base);
     co.setDate(co.getDate() + 2);
     const resp = await client.post<any>("/accommodations/search", {
-      booker: { country: "nl", platform: "desktop" },
+      booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
       checkin: base.toISOString().split("T")[0],
       checkout: co.toISOString().split("T")[0],
       city: cityId,

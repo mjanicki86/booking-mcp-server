@@ -66,7 +66,7 @@ function applyRepeatGuard(count: number, params: FindLandmarkInput, result: any)
 // takie pytanie to okazja dla agenta nadrzednego, zeby zamiast czekac na odpowiedz
 // usera dokonczyc watek samodzielnie i zmyslic wyniki (potwierdzony przypadek z
 // produkcji 2026-09-22). Dlatego takie klastry rozstrzygamy sami.
-const LANDMARK_CLUSTER_DIAMETER_KM = 0.5;
+export const LANDMARK_CLUSTER_DIAMETER_KM = 0.5;
 
 const EARTH_RADIUS_KM = 6371;
 
@@ -87,7 +87,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 // (latitude/longitude na obiekcie) albo zagniezdzone w "coordinates", jak przychodza
 // z Booking.com. Czytamy oba, a gdy nie da sie odczytac - zwracamy null i wtedy
 // swiadomie NIE sklejamy klastra, tylko zostawiamy pytanie o doprecyzowanie.
-function getCoords(m: any): { lat: number; lon: number } | null {
+export function getCoords(m: any): { lat: number; lon: number } | null {
   if (!m) return null;
   const lat =
     typeof m.latitude === "number"
@@ -105,7 +105,7 @@ function getCoords(m: any): { lat: number; lon: number } | null {
   return { lat: lat, lon: lon };
 }
 
-function landmarkLabel(m: any): string {
+export function landmarkLabel(m: any): string {
   if (!m) return "?";
   if (typeof m.name === "string") return m.name;
   if (m.name && typeof m.name === "object") {
@@ -116,7 +116,7 @@ function landmarkLabel(m: any): string {
 
 // Zwraca srednice zbioru (najwieksza odleglosc miedzy dowolna para kandydatow)
 // albo null, jesli ktorykolwiek kandydat nie ma czytelnych wspolrzednych.
-function clusterDiameterKm(matches: any[]): number | null {
+export function clusterDiameterKm(matches: any[]): number | null {
   const pts: Array<{ lat: number; lon: number }> = [];
   for (const m of matches) {
     const c = getCoords(m);
@@ -138,7 +138,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
     "booking_find_landmark",
     {
       title: "Find Landmark Coordinates",
-      description: "Coordinates of a named place in a city (landmark, station, airport, square or street address) from Booking.com's landmark list, with a fallback to general geocoding. Use it whenever the user wants hotels near a place, then pass latitude/longitude to booking_search_hotels. You need the city (in English) - ask if it is unknown.\nCall it ONCE per place per user message - never again for the same place in the same reply. In a later message call it again (results of earlier messages are not visible to you); if the user picked one of several candidates earlier, use the full name of that candidate. Do not choose a radius here - see booking_search_hotels.\nstatus 'single_match': use the coordinates (also when collapsed_duplicates is present - do not ask the user). 'multiple_matches': ask the user which place they mean and STOP - do not search near several candidates and do not list hotels before they answer. 'no_match': say the place was not found and ask for another name. When data_source is external geocoding, mention that the location is approximate.",
+      description: "Coordinates of a named place in a city (landmark, station, airport, square or street address) from Booking.com's landmark list, with a fallback to general geocoding. For hotels near a place you usually do not need it - pass landmark_name to booking_search_hotels instead. Use it when the user asks where a place is, or to check a place before searching; then pass latitude/longitude to booking_search_hotels. You need the city (in English) - ask if it is unknown.\nCall it ONCE per place per user message - never again for the same place in the same reply. In a later message call it again (results of earlier messages are not visible to you); if the user picked one of several candidates earlier, use the full name of that candidate. Do not choose a radius here - see booking_search_hotels.\nstatus 'single_match': use the coordinates (also when collapsed_duplicates is present - do not ask the user). 'multiple_matches': ask the user which place they mean and STOP - do not search near several candidates and do not list hotels before they answer. 'no_match': say the place was not found and ask for another name. When data_source is external geocoding, mention that the location is approximate.",
       inputSchema: FindLandmarkInputSchema.shape,
       annotations: {
         readOnlyHint: true,

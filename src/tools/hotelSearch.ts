@@ -10,6 +10,8 @@ import {
 } from "../services/resultStore.js";
 import { fetchParkingSummaries } from "./hotelDetails.js";
 import { RequestContext } from "../services/requestContext.js";
+import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
+import { LANDMARK_CLUSTER_DIAMETER_KM, clusterDiameterKm, getCoords, landmarkLabel } from "./findLandmark.js";
 
 // === PROMIEN DOMYSLNY (v4, 2026-10-29, decyzja Michala) ===
 // Wczesniej promien dla "koło Wawelu" wybieral model - raz 3 km, raz 1 km
@@ -57,12 +59,16 @@ const SearchToolInputSchema = HotelSearchInputSchema.extend({
     .optional()
     .describe("Radius in km around latitude/longitude - only when the user gave a distance ('do 500 m' -> 0.5). " +
       "Omit for 'koło' / 'w pobliżu' (server default " + DEFAULT_NEAR_RADIUS_KM + " km, widened to " + WIDENED_RADIUS_KM + " km)."),
+  landmark_name: z.string().min(2).max(150).optional()
+    .describe("Named place to search around (landmark, station, airport, street address), e.g. 'Wawel', " +
+      "'Dworzec Centralny'. Requires city + country. The server finds its coordinates - preferred over latitude/longitude."),
   // (v6) dosłowny tekst prośby - patrz USER_REQUEST nizej.
   user_request: z.string().max(2000).optional()
     .describe("Always: the request you are handling (user's message or the task text you received), copied " +
       "verbatim - not paraphrased. The server reads distance and accommodation-type wishes from it."),
 });
 type SearchToolInput = Omit<HotelSearchInput, "radius_km"> & {
+  landmark_name?: string;
   continue_previous?: boolean;
   radius_km?: number;
   user_request?: string;
@@ -413,13 +419,42 @@ function findLooseMatch(keyParams: Record<string, unknown>): string | null {
   return null;
 }
 
+type LandmarkResolution =
+  | { kind: "point"; lat: number; lon: number; name: string; approximate: boolean }
+  | { kind: "multiple"; candidates: string[] }
+  | { kind: "none" };
+
+let landmarkClient: BookingApiClient | null = null;
+
+// Ta sama logika co booking_find_landmark: jedno dopasowanie albo kilka wpisow
+// tego samego miejsca (do LANDMARK_CLUSTER_DIAMETER_KM) -> punkt; kilka roznych
+// miejsc -> pytanie do usera; brak -> geokodowanie zewnetrzne.
+async function resolveLandmarkForSearch(name: string, city: string, country: string): Promise<LandmarkResolution> {
+  if (!landmarkClient) return { kind: "none" };
+  const cityResult = await resolveCityId(landmarkClient, city, country);
+  if (!cityResult) return { kind: "none" };
+  const matches = await searchLandmarks(landmarkClient, cityResult.city_id, name, 10, cityResult.name, cityResult.name_variants);
+  if (matches.length > 0) {
+    const diameter = matches.length === 1 ? 0 : clusterDiameterKm(matches);
+    if (diameter !== null && diameter <= LANDMARK_CLUSTER_DIAMETER_KM) {
+      const c = getCoords(matches[0]);
+      if (c) return { kind: "point", lat: c.lat, lon: c.lon, name: landmarkLabel(matches[0]), approximate: false };
+    }
+    return { kind: "multiple", candidates: matches.map(landmarkLabel) };
+  }
+  const geo = await geocodeAddress(name, cityResult.name);
+  if (geo) return { kind: "point", lat: geo.latitude, lon: geo.longitude, name: name, approximate: true };
+  return { kind: "none" };
+}
+
 export function registerHotelSearchTool(server: McpServer, client: BookingApiClient, ctx: RequestContext): void {
   const scope = ctx.chatId ?? "";
+  landmarkClient = client;
   server.registerTool(
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) first call booking_find_landmark in THIS message and pass its latitude/longitude - never type coordinates yourself or reuse them from earlier messages. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels or apartments.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional: without them sample prices for a weekend about 3 months ahead are returned - say they are sample dates.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels or apartments.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional: without them sample prices for a weekend about 3 months ahead are returned - say they are sample dates.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -440,6 +475,47 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         params.continue_previous = true;
         console.error("=== DIAG paging: user_request \"" + params.user_request.trim() + "\" to prosba o kolejne " +
           "wyniki, a model nie ustawil continue_previous - ustawiam sam.");
+      }
+
+      // === landmark_name (2026-10-29, przeglad optymalizacji pkt 1) ===
+      // Wczesniej kazda tura z miejscem to dwa kroki modelu: booking_find_landmark,
+      // potem to narzedzie (w logach 2,5-3 s miedzy nimi). Teraz model moze podac
+      // sama nazwe miejsca, a serwer ustala wspolrzedne (lista landmarkow miasta
+      // z cache 24 h, potem geokodowanie). Niejednoznaczna nazwa -> pytanie do usera.
+      let landmarkResolvedName: string | null = null;
+      if (!widen && params.latitude == null && typeof params.landmark_name === "string" &&
+          params.landmark_name.trim().length >= 2) {
+        if (!params.city || !params.country) {
+          return {
+            content: [{ type: "text", text: "landmark_name needs city (in English) and country. Ask the user which city " +
+              "the place is in, then search again." }],
+            isError: true,
+          };
+        }
+        const resolved = await resolveLandmarkForSearch(params.landmark_name.trim(), params.city, params.country);
+        if (resolved.kind === "point") {
+          params.latitude = resolved.lat;
+          params.longitude = resolved.lon;
+          landmarkResolvedName = resolved.name;
+          console.error("=== DIAG landmark_name: \"" + params.landmark_name + "\" -> " + resolved.name + " (" +
+            resolved.lat + ", " + resolved.lon + ")" + (resolved.approximate ? ", geokodowanie zewnetrzne" : "") + ".");
+        } else {
+          console.error("=== DIAG landmark_name: \"" + params.landmark_name + "\" -> " + resolved.kind + ".");
+          const out: any = resolved.kind === "multiple"
+            ? {
+              status: "multiple_matches",
+              message: "Several places match \"" + params.landmark_name + "\". Ask the user which one they mean (show the " +
+                "names) and STOP - do not list hotels yet. Then search again with landmark_name set to the full name " +
+                "of the chosen place.",
+              candidates: resolved.candidates,
+            }
+            : {
+              status: "no_match",
+              message: "Place \"" + params.landmark_name + "\" was not found in " + params.city + " (Booking.com landmarks " +
+                "and general geocoding). Tell the user and ask for another name or a nearby well-known place.",
+            };
+          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+        }
       }
 
       const usingCoordinates = params.latitude != null && params.longitude != null;
@@ -646,7 +722,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             radius: params.radius_km,
           },
         };
-        locationLabel = "point (" + params.latitude + ", " + params.longitude + "), radius " + params.radius_km + " km";
+        locationLabel = (landmarkResolvedName ? landmarkResolvedName + " " : "") + "point (" + params.latitude + ", " +
+          params.longitude + "), radius " + params.radius_km + " km";
       } else {
         const cityResult = await resolveCityId(client, params.city!, params.country!);
         if (!cityResult) {

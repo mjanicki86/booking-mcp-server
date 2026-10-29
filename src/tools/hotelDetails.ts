@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { config } from "../config.js";
 import { sanitizeForOrchestrator } from "../utils/sanitizeForOrchestrator.js";
+import { LOG_DEBUG } from "../services/bookingClient.js";
 
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
@@ -476,7 +477,7 @@ export function registerHotelDetailsTool(
 
         const responseText = await response.text();
         console.error("=== Hotel details status: " + response.status);
-        console.error("=== Hotel details body: " + responseText.slice(0, 6000));
+        if (LOG_DEBUG || !response.ok) console.error("=== Hotel details body: " + responseText.slice(0, 6000));
 
         if (!response.ok) {
           return {

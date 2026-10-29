@@ -86,6 +86,18 @@ function chunk<T>(list: T[], size: number): T[][] {
   return out;
 }
 
+// === LOGI (2026-10-29) ===
+// LOG_LEVEL=debug -> pelne body zadan i 1000 znakow odpowiedzi (jak wczesniej).
+// Domyslnie skrot: endpoint, poczatek zapytania (300 znakow), status, liczba
+// rekordow i czas - zeby Log Analytics nie puchl od surowych odpowiedzi.
+export const LOG_DEBUG = (process.env.LOG_LEVEL ?? "").trim().toLowerCase() === "debug";
+
+// === ENDPOINT OCEN (2026-10-29) ===
+// /accommodations/reviews/scores zwraca 403 od 2026-10-21 (brak uprawnien
+// klucza). Domyslnie wylaczony - oceny z /accommodations/details. Po
+// odblokowaniu przez Booking.com: zmienna REVIEWS_ENDPOINT=on.
+const REVIEWS_ENDPOINT_ENABLED = (process.env.REVIEWS_ENDPOINT ?? "").trim().toLowerCase() === "on";
+
 export class BookingApiClient {
   private readonly apiKey: string;
   private readonly affiliateId: string;
@@ -103,9 +115,11 @@ export class BookingApiClient {
     // w tym samym zadaniu. Dla tego endpointu logujemy tylko skrotowo.
     const isCityLookup = endpoint.indexOf("/common/locations/cities") !== -1;
 
+    const started = Date.now();
     if (!isCityLookup) {
+      const bodyText = JSON.stringify(body);
       console.error("=== Calling Booking.com: " + url);
-      console.error("=== Request body: " + JSON.stringify(body));
+      console.error("=== Request body: " + (LOG_DEBUG || bodyText.length <= 300 ? bodyText : bodyText.slice(0, 300) + "...(" + bodyText.length + " znakow)"));
     }
 
     const response = await fetch(url, {
@@ -122,8 +136,14 @@ export class BookingApiClient {
     const responseText = await response.text();
 
     if (!isCityLookup) {
-      console.error("=== Booking.com response status: " + response.status);
-      console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
+      if (LOG_DEBUG || !response.ok) {
+        console.error("=== Booking.com response status: " + response.status);
+        console.error("=== Booking.com response body: " + responseText.slice(0, 1000));
+      } else {
+        let count = "?";
+        try { const d = JSON.parse(responseText)?.data; count = Array.isArray(d) ? String(d.length) : "?"; } catch { /* pomijamy */ }
+        console.error("=== Booking.com " + response.status + ", " + count + " rekordow, " + (Date.now() - started) + " ms");
+      }
     }
 
     if (!response.ok) {
@@ -163,6 +183,9 @@ export class BookingApiClient {
       return { byId: byId, failed: false };
     }
 
+    if (!REVIEWS_ENDPOINT_ENABLED) {
+      return { byId: byId, failed: true };
+    }
     if (Date.now() < reviewsDisabledUntil) {
       console.error("=== DIAG reviews: endpoint ocen wylaczony po 403 (do " +
         new Date(reviewsDisabledUntil).toISOString() + ") - pomijam wywolanie.");
@@ -410,7 +433,8 @@ export class BookingApiClient {
       // ocen gosci", Krakow 3* ocena 8+), mimo ze dane byly pod reka.
       if (reviewsFetchFailed && details) {
         const withScore = Object.values(detailsRatingById).filter((r) => r.review_score != null).length;
-        console.error("=== DIAG reviews: endpoint ocen zawiodl - uzywam rating.review_score z /details (" +
+        console.error("=== DIAG reviews: " + (REVIEWS_ENDPOINT_ENABLED ? "endpoint ocen zawiodl" : "endpoint ocen wylaczony (REVIEWS_ENDPOINT)") +
+          " - uzywam rating.review_score z /details (" +
           withScore + " z " + ids.length + " hoteli ma ocene).");
         reviewsFetchFailed = false;
       }
