@@ -213,7 +213,7 @@ function buildParkingSummary(fd: any, currency: string | null, facilityTexts: st
   const list = Array.isArray(fd?.parking_facilities) ? fd.parking_facilities : [];
   if (list.length > 0) {
     const prefix = parkingKind(fd, facilityTexts) === "public_only"
-      ? "UWAGA: obiekt nie ma wlasnego parkingu - tylko parking publiczny. "
+      ? "Obiekt nie ma własnego parkingu, tylko parking publiczny. "
       : "";
     return prefix + list.map((p: any) => {
       const parts: string[] = ["Parking"];

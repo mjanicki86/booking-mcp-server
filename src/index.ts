@@ -27,11 +27,12 @@ const PORT = parseInt(process.env.PORT ?? "8080", 10);
 const MCP_ACCESS_KEY = process.env.MCP_ACCESS_KEY ?? "";
 const MCP_AUTH_MODE = (process.env.MCP_AUTH_MODE ?? "log").trim().toLowerCase();
 
-type KeyCheck = "zgodny" | "niezgodny" | "brak" | "nie sprawdzam";
+type KeyCheck = "zgodny" | "niezgodny" | "brak" | string;
 
 function checkAccessKey(header: unknown): KeyCheck {
-  if (!MCP_ACCESS_KEY) return "nie sprawdzam";
   if (typeof header !== "string" || header.length === 0) return "brak";
+  // Bez MCP_ACCESS_KEY nie ma z czym porownac, ale logujemy, czy klucz w ogole przychodzi.
+  if (!MCP_ACCESS_KEY) return ("nie sprawdzam, naglowek jest (" + header.length + " znakow)") as KeyCheck;
   const a = Buffer.from(header, "utf8");
   const b = Buffer.from(MCP_ACCESS_KEY, "utf8");
   return a.length === b.length && timingSafeEqual(a, b) ? "zgodny" : "niezgodny";
@@ -90,7 +91,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
   const convHeader = req.headers["conversation-id"];
   console.error("=== DIAG naglowki: mcp-key=" + keyCheck + " (tryb " + MCP_AUTH_MODE + ")" +
     ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
-  if (MCP_AUTH_MODE === "enforce" && keyCheck !== "zgodny" && keyCheck !== "nie sprawdzam") {
+  if (MCP_AUTH_MODE === "enforce" && MCP_ACCESS_KEY && keyCheck !== "zgodny") {
     console.error("=== Odrzucone: brak poprawnego klucza mcp-key (" + keyCheck + ") ===");
     res.status(401).json({
       jsonrpc: "2.0",
