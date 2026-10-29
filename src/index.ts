@@ -58,6 +58,13 @@ function buildServer(): McpServer {
 app.post("/mcp", async (req: Request, res: Response) => {
   const started = Date.now();
   console.error("=== POST /mcp received ===");
+  // (2026-10-29) Test nagłówków z konektora Copilot Studio: klucz dostępu (tylko
+  // czy jest i jaką ma długość - nigdy wartość) oraz identyfikator rozmowy.
+  const keyHeader = req.headers["mcp-key"];
+  const convHeader = req.headers["conversation-id"];
+  console.error("=== DIAG naglowki: mcp-key=" +
+    (typeof keyHeader === "string" && keyHeader.length > 0 ? "jest (" + keyHeader.length + " znakow)" : "brak") +
+    ", conversation-id=" + (typeof convHeader === "string" && convHeader.length > 0 ? "\"" + convHeader + "\"" : "brak"));
   console.error("Body:", JSON.stringify(req.body));
 
   const body: any = req.body;
