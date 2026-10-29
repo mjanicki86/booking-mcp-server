@@ -252,6 +252,20 @@ function rememberUserRadius(lat: number, lon: number, km: number): void {
   }
 }
 
+// "dalej" bez continue_previous (test 2026-10-29, Sukiennice): model 2 z 5 razy
+// wyslal "dalej" jako NOWE wyszukiwanie -> znowu pozycje 1-10, ktore agent podpisal
+// jako 11-20 albo przenumerowal na 31-40. Krotka wiadomosc o kolejnych wynikach
+// traktujemy wiec jako kontynuacje niezaleznie od flagi od modelu.
+const NEXT_BATCH_WORDS_RE = /(^|[^\p{L}])(dalej|kolejn\p{L}*|nast[eę]pn\p{L}*|wi[eę]cej|pozosta[lł]\p{L}*|reszt\p{L}*|next|more)([^\p{L}]|$)/iu;
+const NEXT_BATCH_MAX_LEN = 60;
+
+function isNextBatchRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > NEXT_BATCH_MAX_LEN) return false;
+  if (/\d\s*(\*|gwiazd|km|m\b|pln|zł|eur)/iu.test(t)) return false;
+  return NEXT_BATCH_WORDS_RE.test(t);
+}
+
 function recentUserRadius(lat: number, lon: number): number | null {
   const e = userRadiusByPoint.get(pointKey(lat, lon));
   if (!e || Date.now() - e.at > COORD_SNAP_MAX_AGE_MS) return null;
@@ -419,6 +433,13 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
   // (v4) Nazwana funkcja zamiast anonimowego handlera - automatyczne poszerzenie
   // promienia wywoluje ja ponownie z WidenContext.
   async function searchHotels(params: SearchToolInput, widen: WidenContext | null): Promise<any> {
+
+      if (!widen && !params.continue_previous && typeof params.user_request === "string" &&
+          isNextBatchRequest(params.user_request)) {
+        params.continue_previous = true;
+        console.error("=== DIAG paging: user_request \"" + params.user_request.trim() + "\" to prosba o kolejne " +
+          "wyniki, a model nie ustawil continue_previous - ustawiam sam.");
+      }
 
       const usingCoordinates = params.latitude != null && params.longitude != null;
 
