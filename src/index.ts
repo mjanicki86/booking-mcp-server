@@ -97,7 +97,7 @@ function buildServer(ctx: RequestContext): McpServer {
   const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
   const apiClient = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
 
-  registerHotelSearchTool(server, apiClient);
+  registerHotelSearchTool(server, apiClient, ctx);
   registerSearchCitiesTool(server, apiClient);
   registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
   registerFindHotelTool(server, apiClient);

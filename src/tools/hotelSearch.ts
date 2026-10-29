@@ -9,6 +9,7 @@ import {
   StoredResultSet,
 } from "../services/resultStore.js";
 import { fetchParkingSummaries } from "./hotelDetails.js";
+import { RequestContext } from "../services/requestContext.js";
 
 // === PROMIEN DOMYSLNY (v4, 2026-10-29, decyzja Michala) ===
 // Wczesniej promien dla "koło Wawelu" wybieral model - raz 3 km, raz 1 km
@@ -210,7 +211,7 @@ function compareForSort(a: any, b: any, sortBy?: string): number {
 const COORD_SNAP_MAX_KM = 0.25;
 const COORD_SNAP_MAX_AGE_MS = 30 * 60 * 1000;
 const COORD_SNAP_MAX_POINTS = 200;
-const recentSearchPoints: { lat: number; lon: number; at: number }[] = [];
+const recentSearchPoints: { scope: string; lat: number; lon: number; at: number }[] = [];
 
 // === USER_REQUEST (v6, testy 2026-10-29) ===
 // Mapa aktywnosci w Copilot Studio: hotelowy przekazal "Wyszukaj hotele 5-gwiazdkowe
@@ -239,13 +240,16 @@ function parseUserDistanceKm(text: string): number | null {
 const userRadiusByPoint = new Map<string, { km: number; at: number }>();
 const USER_RADIUS_MAX_POINTS = 300;
 
-function pointKey(lat: number, lon: number): string {
-  return lat.toFixed(4) + "," + lon.toFixed(4);
+// (2026-10-29) Caly stan miedzy turami jest per czat (scope = czesc naglowka
+// conversation-id stala dla czatu Teams, patrz services/requestContext.ts).
+// Bez naglowka scope = "" i zachowanie jest jak wczesniej (wspolne dla serwera).
+function pointKey(scope: string, lat: number, lon: number): string {
+  return scope + "|" + lat.toFixed(4) + "," + lon.toFixed(4);
 }
 
-function rememberUserRadius(lat: number, lon: number, km: number): void {
-  userRadiusByPoint.delete(pointKey(lat, lon));
-  userRadiusByPoint.set(pointKey(lat, lon), { km, at: Date.now() });
+function rememberUserRadius(scope: string, lat: number, lon: number, km: number): void {
+  userRadiusByPoint.delete(pointKey(scope, lat, lon));
+  userRadiusByPoint.set(pointKey(scope, lat, lon), { km, at: Date.now() });
   if (userRadiusByPoint.size > USER_RADIUS_MAX_POINTS) {
     const oldest = userRadiusByPoint.keys().next().value;
     if (oldest !== undefined) userRadiusByPoint.delete(oldest);
@@ -266,21 +270,22 @@ function isNextBatchRequest(text: string): boolean {
   return NEXT_BATCH_WORDS_RE.test(t);
 }
 
-function recentUserRadius(lat: number, lon: number): number | null {
-  const e = userRadiusByPoint.get(pointKey(lat, lon));
+function recentUserRadius(scope: string, lat: number, lon: number): number | null {
+  const e = userRadiusByPoint.get(pointKey(scope, lat, lon));
   if (!e || Date.now() - e.at > COORD_SNAP_MAX_AGE_MS) return null;
   e.at = Date.now();
   return e.km;
 }
 
-function snapToRecentPoint(lat: number, lon: number): { lat: number; lon: number; snappedFromM: number | null } {
+function snapToRecentPoint(scope: string, lat: number, lon: number): { lat: number; lon: number; snappedFromM: number | null } {
   const now = Date.now();
   for (let i = recentSearchPoints.length - 1; i >= 0; i--) {
     if (now - recentSearchPoints[i].at > COORD_SNAP_MAX_AGE_MS) recentSearchPoints.splice(i, 1);
   }
-  let best: { lat: number; lon: number; at: number } | null = null;
+  let best: { scope: string; lat: number; lon: number; at: number } | null = null;
   let bestKm = Infinity;
   for (const p of recentSearchPoints) {
+    if (p.scope !== scope) continue;
     const d = haversineKm(lat, lon, p.lat, p.lon);
     if (d < bestKm) { bestKm = d; best = p; }
   }
@@ -292,7 +297,7 @@ function snapToRecentPoint(lat: number, lon: number): { lat: number; lon: number
     best.at = now;
     return { lat: best.lat, lon: best.lon, snappedFromM: Math.round(bestKm * 1000) };
   }
-  recentSearchPoints.push({ lat, lon, at: now });
+  recentSearchPoints.push({ scope, lat, lon, at: now });
   if (recentSearchPoints.length > COORD_SNAP_MAX_POINTS) recentSearchPoints.shift();
   return { lat, lon, snappedFromM: null };
 }
@@ -413,7 +418,8 @@ function findLooseMatch(keyParams: Record<string, unknown>): string | null {
   return null;
 }
 
-export function registerHotelSearchTool(server: McpServer, client: BookingApiClient): void {
+export function registerHotelSearchTool(server: McpServer, client: BookingApiClient, ctx: RequestContext): void {
+  const scope = ctx.chatId ?? "";
   server.registerTool(
     "booking_search_hotels",
     {
@@ -446,7 +452,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       if (usingCoordinates) {
         const reqLat = Number(params.latitude);
         const reqLon = Number(params.longitude);
-        const snapped = snapToRecentPoint(reqLat, reqLon);
+        const snapped = snapToRecentPoint(scope, reqLat, reqLon);
         if (snapped.snappedFromM != null) {
           console.error("=== DIAG wspolrzedne: (" + reqLat + ", " + reqLon + ") dociagniete do niedawno uzytego " +
             "punktu (" + snapped.lat + ", " + snapped.lon + "), odchylenie " + snapped.snappedFromM + " m " +
@@ -472,10 +478,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         } else if (userText) {
           const modelRadius = params.radius_km;
           const fromText = parseUserDistanceKm(userText);
-          const earlier = fromText == null ? recentUserRadius(lat, lon) : null;
+          const earlier = fromText == null ? recentUserRadius(scope, lat, lon) : null;
           if (fromText != null) {
             params.radius_km = fromText;
-            rememberUserRadius(lat, lon, fromText);
+            rememberUserRadius(scope, lat, lon, fromText);
             console.error("=== DIAG promien: " + fromText + " km z tekstu usera" +
               (modelRadius != null && modelRadius !== fromText ? " (model wyslal " + modelRadius + " km - pomijam)." : "."));
           } else if (earlier != null) {
@@ -517,7 +523,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       // "dalej" bez miasta/wspolrzednych: model czesto wysyla SAMO
       // continue_previous:true (test 2026-10-22). Bierzemy ostatnio uzywana liste.
       if (params.continue_previous && !usingCoordinates && (!params.city || !params.country)) {
-        const recent = getMostRecentResultSet(CONTINUE_FALLBACK_MAX_AGE_MS);
+        const recent = getMostRecentResultSet(CONTINUE_FALLBACK_MAX_AGE_MS, scope);
         if (recent) {
           return serveNextBatch(recent.key, recent.entry, "ostatnia lista - bez parametrow");
         }
@@ -567,6 +573,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
       // Klucz listy = parametry wyszukiwania (bez continue_previous i results_limit).
       const keyParams = {
+        // Czat - ta sama lista u dwoch konsultantow to dwie osobne listy (wlasny licznik paczek).
+        scope: scope || undefined,
         city: params.city, country: params.country,
         latitude: params.latitude != null ? Number(params.latitude).toFixed(5) : undefined,
         longitude: params.longitude != null ? Number(params.longitude).toFixed(5) : undefined,
@@ -1203,7 +1211,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (output.breakfast_reminder) meta.breakfast_reminder = output.breakfast_reminder;
           if (output.parking_note) meta.parking_note = output.parking_note;
           if (usingCoordinates) meta.radius_km = params.radius_km;
-          saveResultSet(searchKey, limitedAll, pageSize, meta);
+          saveResultSet(searchKey, limitedAll, pageSize, meta, scope);
           rememberSavedList(searchKey, keyParams);
           console.error("=== DIAG paging: zapisano " + limitedAll.length + " hoteli (paczki po " + pageSize +
             ") pod kluczem " + searchKey);

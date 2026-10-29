@@ -35,6 +35,7 @@ export interface StoredResultSet {
   createdAt: number;
   lastServedPage: number;        // ostatnio wydana paczka (1 = pierwsza)
   lastAccess: number;            // ostatnie uzycie (zapis albo wydanie paczki)
+  scope: string;                 // czat Teams (z naglowka conversation-id); "" = brak naglowka
 }
 
 const store = new Map<string, StoredResultSet>();
@@ -72,12 +73,12 @@ export function makeSearchKey(params: Record<string, unknown>): string {
   return createHash("sha1").update(JSON.stringify(norm(params))).digest("hex").slice(0, 16);
 }
 
-export function saveResultSet(key: string, hotels: any[], pageSize: number, meta: Record<string, unknown>): void {
+export function saveResultSet(key: string, hotels: any[], pageSize: number, meta: Record<string, unknown>, scope = ""): void {
   evictExpired();
   const numbered = hotels.map((h, i) => ({ position: i + 1, ...h }));
   store.delete(key); // nowe wyszukiwanie = od poczatku i "najmlodszy" wpis
   const now = Date.now();
-  store.set(key, { hotels: numbered, page_size: pageSize, meta, createdAt: now, lastServedPage: 1, lastAccess: now });
+  store.set(key, { hotels: numbered, page_size: pageSize, meta, createdAt: now, lastServedPage: 1, lastAccess: now, scope });
 }
 
 export function getResultSet(key: string): StoredResultSet | null {
@@ -95,12 +96,15 @@ export function getResultSet(key: string): StoredResultSet | null {
 // uzyta najpozniej (w ciagu maxAgeMs). Przy kilku konsultantach naraz moze
 // to trafic w cudza liste - dlatego krotkie okno i jawna informacja w
 // odpowiedzi, ktorego wyszukiwania dotyczy paczka (meta.location/daty).
-export function getMostRecentResultSet(maxAgeMs: number): { key: string; entry: StoredResultSet } | null {
+// (2026-10-29) scope: tylko listy z tego samego czatu - wczesniej "dalej" bez
+// parametrow moglo trafic w liste innego konsultanta.
+export function getMostRecentResultSet(maxAgeMs: number, scope = ""): { key: string; entry: StoredResultSet } | null {
   let best: { key: string; entry: StoredResultSet } | null = null;
   const now = Date.now();
   for (const [key, entry] of store) {
     if (now - entry.createdAt >= RESULT_TTL_MS) continue;
     if (now - entry.lastAccess > maxAgeMs) continue;
+    if (entry.scope !== scope) continue;
     if (!best || entry.lastAccess > best.entry.lastAccess) best = { key, entry };
   }
   return best;
