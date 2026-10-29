@@ -9,6 +9,7 @@ import { registerSearchCitiesTool } from "./tools/listCities.js";
 import { registerHotelDetailsTool, loadFacilityNames } from "./tools/hotelDetails.js";
 import { registerFindHotelTool, prewarmCity } from "./tools/findHotel.js";
 import { registerFindLandmarkTool } from "./tools/findLandmark.js";
+import { RequestContext, contextFromHeaders } from "./services/requestContext.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
@@ -42,7 +43,7 @@ app.get("/health", (_req: Request, res: Response) => {
 // modulow, wiec NIE sa tracone miedzy zadaniami.
 // ---------------------------------------------------------------------------
 
-function buildServer(): McpServer {
+function buildServer(ctx: RequestContext): McpServer {
   const server = new McpServer({ name: "booking-mcp-server", version: "1.0.0" });
   const apiClient = new BookingApiClient(config.bookingApiKey, config.bookingAffiliateId);
 
@@ -50,7 +51,7 @@ function buildServer(): McpServer {
   registerSearchCitiesTool(server, apiClient);
   registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
   registerFindHotelTool(server, apiClient);
-  registerFindLandmarkTool(server, apiClient);
+  registerFindLandmarkTool(server, apiClient, ctx);
 
   return server;
 }
@@ -89,7 +90,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
       " -> HTTP " + res.statusCode + ", " + (Date.now() - started) + " ms ===");
   });
 
-  const server = buildServer();
+  const server = buildServer(contextFromHeaders(req.headers));
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

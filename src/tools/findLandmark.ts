@@ -3,6 +3,59 @@ import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId } from "../services/cityResolver.js";
 import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
 import { FindLandmarkInputSchema, FindLandmarkInput } from "../schemas/inputSchemas.js";
+import { RequestContext } from "../services/requestContext.js";
+import { normalizeText } from "../services/textNormalize.js";
+
+// === PETLA WYWOLAN (test 2026-10-29, 11:50-11:54) ===
+// W jednej turze (ten sam naglowek conversation-id) model wywolal
+// booking_find_landmark("Wawel") ponad 120 razy co ~1,7 s, nie przechodzac do
+// booking_search_hotels - kazda odpowiedz byla poprawna (HTTP 200, 1 dopasowanie).
+// Prawdopodobna przyczyna: zdanie z opisu "wywolaj ponownie w kazdej turze"
+// model zastosowal do kazdego kroku wlasnej petli. Obrona po stronie serwera:
+// licznik powtorzen tego samego miejsca w tej samej turze; od 2. powtorzenia
+// odpowiedz mowi wprost, ze wspolrzedne juz sa i trzeba wywolac wyszukiwanie,
+// od REPEAT_HARD_STOP zwracamy blad (z tymi samymi wspolrzednymi), zeby przerwac petle.
+const REPEAT_WINDOW_MS = 5 * 60 * 1000;
+const REPEAT_WARN_FROM = 2;
+const REPEAT_HARD_STOP = 4;
+const repeatCounter = new Map<string, { count: number; lastAt: number }>();
+
+function countRepeat(ctx: RequestContext, params: FindLandmarkInput): number {
+  if (!ctx.turnId) return 1;
+  const now = Date.now();
+  for (const [k, v] of repeatCounter) {
+    if (now - v.lastAt > REPEAT_WINDOW_MS) repeatCounter.delete(k);
+  }
+  const key = ctx.turnId + "|" + normalizeText(params.country) + "|" + normalizeText(params.city) + "|" +
+    normalizeText(params.landmark_name);
+  const e = repeatCounter.get(key);
+  const count = e && now - e.lastAt <= REPEAT_WINDOW_MS ? e.count + 1 : 1;
+  repeatCounter.set(key, { count, lastAt: now });
+  return count;
+}
+
+function applyRepeatGuard(count: number, params: FindLandmarkInput, result: any): any {
+  if (count < REPEAT_WARN_FROM || result?.isError) return result;
+  const out = result?.structuredContent;
+  const lm = out?.landmark;
+  const lat = lm?.latitude ?? lm?.coordinates?.latitude;
+  const lon = lm?.longitude ?? lm?.coordinates?.longitude;
+  const coordsText = typeof lat === "number" && typeof lon === "number"
+    ? "latitude " + lat + ", longitude " + lon : "the coordinates returned in your first call";
+  console.error("=== DIAG findLandmark: " + count + ". wywolanie dla \"" + params.landmark_name +
+    "\" w tej samej turze" + (count >= REPEAT_HARD_STOP ? " - zwracam blad, zeby przerwac petle." : " - ostrzegam model."));
+  const instruction = "You have ALREADY resolved \"" + params.landmark_name + "\" in this turn (" + count +
+    " calls). Do NOT call booking_find_landmark again for it. Call booking_search_hotels NOW with " + coordsText +
+    (out?.status === "multiple_matches" ? ", or ask the user which place they mean and stop." : ".");
+  if (count >= REPEAT_HARD_STOP) {
+    return { content: [{ type: "text", text: "STOP: " + instruction }], isError: true };
+  }
+  if (out && typeof out === "object") {
+    const patched = { repeated_call_warning: instruction, ...out };
+    return { content: [{ type: "text", text: JSON.stringify(patched, null, 2) }], structuredContent: patched };
+  }
+  return result;
+}
 
 // Jesli wszystkie dopasowania landmarku leza w tak malej odleglosci od siebie, to
 // w praktyce jest to JEDEN punkt w bazie Booking.com zdublowany pod dwiema nazwami
@@ -80,7 +133,7 @@ function clusterDiameterKm(matches: any[]): number | null {
   return max;
 }
 
-export function registerFindLandmarkTool(server: McpServer, client: BookingApiClient): void {
+export function registerFindLandmarkTool(server: McpServer, client: BookingApiClient, ctx: RequestContext): void {
   server.registerTool(
     "booking_find_landmark",
     {
@@ -93,8 +146,9 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         "search (e.g. 'within 1km of Fontanna Neptuna', 'near the central station', 'close to the " +
         "Eiffel Tower', or a plain address/square like 'plac Artura Zawiszy') - do NOT invent or guess " +
         "coordinates yourself. " +
-        "CALL IT AGAIN IN EVERY TURN THAT SEARCHES NEAR THE PLACE: tool results from earlier turns are " +
-        "NOT visible to you, so for a follow-up about the same place (changing stars, price, breakfast, " +
+        "CALL IT ONCE PER USER MESSAGE: within one reply call it once per place and then go straight to " +
+        "booking_search_hotels - never call it twice for the same place in one reply. In a LATER user message, " +
+        "tool results from earlier messages are NOT visible to you, so for a follow-up about the same place (changing stars, price, breakfast, " +
         "radius, removing a filter) call this tool again and use exactly the coordinates it returns - " +
         "never type coordinates from memory. If the user already picked one candidate from a " +
         "'multiple_matches' question earlier, call it with the full name of the candidate they chose, so " +
@@ -128,7 +182,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         openWorldHint: true,
       },
     },
-    async (params: FindLandmarkInput) => {
+    async (params: FindLandmarkInput) => applyRepeatGuard(countRepeat(ctx, params), params, await (async () => {
       const cityResult = await resolveCityId(client, params.city, params.country);
       if (!cityResult) {
         return {
@@ -265,6 +319,6 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
           isError: true,
         };
       }
-    }
+    })()),
   );
 }
