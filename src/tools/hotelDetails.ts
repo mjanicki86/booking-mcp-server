@@ -285,16 +285,109 @@ function parseWifiDetails(fd: any, currency: string | null): any | null {
   return entry;
 }
 
+// ---------------------------------------------------------------------------
+// PARKING DLA LISTY HOTELI (2026-10-29)
+//
+// Zgloszenie Julii Galki (2026-10-28, hotele 3* przy Wawelu "z parkingiem"):
+// booking_search_hotels z required_facilities=parking zwracal hotele BEZ
+// zadnej informacji o parkingu. Przy dopytaniu o cene parkingu model wywolal
+// booking_get_hotel_details z WYMYSLONYMI hotel_id (1098571..1098577 -
+// kolejne liczby, zadne z wynikow wyszukiwania: 332612, 258759, 87070, ...),
+// /details zwrocil data:[] dla kazdego, a model oglosil "zaden obiekt nie
+// udostepnil danych o parkingu".
+//
+// Przyczyna: Copilot Studio nie przekazuje modelowi wynikow narzedzi z
+// poprzednich tur (patrz komentarz w hotelSearch.ts), wiec hotel_id z listy
+// nie przezywaja do kolejnej tury. Dlatego parking dla listy liczymy po
+// stronie serwera - JEDNYM zapytaniem /details dla wszystkich ID listy - i
+// dokladamy parking_summary do kazdej pozycji wyniku wyszukiwania.
+//
+// Dane dostepowe zapamietujemy przy rejestracji narzedzia szczegolow, zeby
+// nie zmieniac sygnatury registerHotelSearchTool ani index.ts.
+// ---------------------------------------------------------------------------
+let parkingApiCreds: { apiKey: string; affiliateId: string } | null = null;
+const DETAILS_MAX_IDS_PER_REQUEST = 100;
+
+export interface ParkingInfo {
+  summary: string;
+  details: any[] | null;
+}
+
+export async function fetchParkingSummaries(
+  hotelIds: number[]
+): Promise<{ byId: Map<number, ParkingInfo>; failed: boolean }> {
+  const byId = new Map<number, ParkingInfo>();
+  if (hotelIds.length === 0) return { byId, failed: false };
+  if (!parkingApiCreds) {
+    console.error("=== OSTRZEZENIE fetchParkingSummaries: brak danych dostepowych " +
+      "(registerHotelDetailsTool nie zostal wywolany) - pomijam parking dla listy.");
+    return { byId, failed: true };
+  }
+  const { apiKey, affiliateId } = parkingApiCreds;
+  const facilityNamesPromise = loadFacilityNames(apiKey, affiliateId);
+  let failed = false;
+  let withStructured = 0;
+
+  for (let i = 0; i < hotelIds.length; i += DETAILS_MAX_IDS_PER_REQUEST) {
+    const chunk = hotelIds.slice(i, i + DETAILS_MAX_IDS_PER_REQUEST);
+    try {
+      const response = await fetch(config.bookingApiBaseUrl + "/accommodations/details", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Affiliate-Id": affiliateId,
+          "Authorization": "Bearer " + apiKey,
+        },
+        body: JSON.stringify({ accommodations: chunk, extras: ["facilities"] }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        console.error("=== BLAD parking dla listy: /details " + response.status + ": " + text.slice(0, 500));
+        failed = true;
+        continue;
+      }
+      const raw = JSON.parse(text);
+      const list: any[] = raw.data ?? [];
+      const names = await facilityNamesPromise;
+      for (const h of list) {
+        if (h?.id == null) continue;
+        const currency: string | null = typeof h.currency === "string" ? h.currency : null;
+        const texts: string[] = [];
+        if (Array.isArray(h.facilities)) {
+          for (const f of h.facilities) {
+            const t = facilityToText(f, names?.accommodation ?? null, FACILITY_NAMES);
+            if (t) texts.push(t);
+          }
+        }
+        const details = parseParkingDetails(h.facility_details, currency);
+        if (details) withStructured++;
+        byId.set(h.id, { summary: buildParkingSummary(h.facility_details, currency, texts), details });
+      }
+    } catch (err) {
+      console.error("=== BLAD parking dla listy: wyjatek: " + (err instanceof Error ? err.message : String(err)));
+      failed = true;
+    }
+  }
+
+  console.error("=== DIAG parking dla listy: " + byId.size + " z " + hotelIds.length +
+    " hoteli ma dane z /details, " + withStructured +
+    " ze szczegolami parkingu (facility_details.parking_facilities)" +
+    (failed ? ", CZESC ZAPYTAN NIEUDANA" : "") + ".");
+  return { byId, failed };
+}
+
 export function registerHotelDetailsTool(
   server: McpServer,
   apiKey: string,
   affiliateId: string
 ): void {
+  parkingApiCreds = { apiKey, affiliateId };
   server.registerTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - state it ONCE in your own words, do not repeat it or quote it as a separate 'Opis'; never say 'no information about parking' if parking_summary or facilities mention parking. CONTACT: if the user asks how to contact the hotel or something must be confirmed with the hotel, give 'contact' (telephone/email). PETS: use the 'pets' field. NO GUESSING: state only facts present in this response - do not infer extra facts (e.g. a 24-hour front desk does NOT mean check-in at any time: check-in hours are in checkin_from/checkin_until); if a field is null, say the API does not provide it. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. LINK: EVERY answer based on this tool MUST end with a clickable link to the property page on Booking.com, taken from the 'url' field (e.g. '[Nazwa hotelu na Booking.com](url)'), placed right before the 'Źródło' line - consultants use it to verify the information. Never omit it, even for one-line answers (parking, reception hours, etc.). Requires hotel_id from booking_search_hotels or booking_find_hotel results. Args: hotel_id (number): Hotel ID from search results.",
+      description: "Get detailed information about a specific hotel, including its FULL list of facilities/amenities (parking, pool, gym/fitness, WiFi, restaurant, air conditioning, spa, sauna, pets allowed, elevator, etc.), meal prices (breakfast/lunch/dinner), room types, check-in/out policies, payment options, and important information such as fees and pet policies. CRITICAL: this is the ONLY reliable source for checking whether a hotel has a specific amenity (pool, gym, parking, spa, air conditioning, pets, etc.) - always check the structured 'facilities' field in the response, NOT the free-text description, which is often incomplete. PARKING: answer parking questions from 'parking_summary' (a ready Polish sentence: type, location, free/paid, price, reservation) - state it ONCE in your own words, do not repeat it or quote it as a separate 'Opis'; never say 'no information about parking' if parking_summary or facilities mention parking. CONTACT: if the user asks how to contact the hotel or something must be confirmed with the hotel, give 'contact' (telephone/email). PETS: use the 'pets' field. NO GUESSING: state only facts present in this response - do not infer extra facts (e.g. a 24-hour front desk does NOT mean check-in at any time: check-in hours are in checkin_from/checkin_until); if a field is null, say the API does not provide it. If the user asks 'does hotel X have a pool/gym/parking/etc.' or wants a list of hotels filtered by an amenity, call this tool for each candidate hotel and check its facilities field. LINK: EVERY answer based on this tool MUST end with a clickable link to the property page on Booking.com, taken from the 'url' field (e.g. '[Nazwa hotelu na Booking.com](url)'), placed right before the 'Źródło' line - consultants use it to verify the information. Never omit it, even for one-line answers (parking, reception hours, etc.). HOTEL_ID - CRITICAL: hotel_id MUST be copied from a booking_search_hotels or booking_find_hotel response you received in the CURRENT turn. Tool results from previous turns are NOT visible to you, so if the id is not in front of you right now, call booking_find_hotel (hotel_name + city + country - hotel names ARE in the conversation) first. NEVER guess, reconstruct or 'remember' a hotel_id and NEVER use consecutive/sequential numbers - a wrong id returns no data and you would wrongly tell the user the hotel has no information. PARKING FOR A LIST: if the user asks about parking (price/type) for several hotels from a search list, do NOT call this tool once per hotel - repeat booking_search_hotels with the same parameters plus include_parking:true, which returns parking_summary for every hotel on the list. Args: hotel_id (number): Hotel ID from a search/find response in the current turn.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -346,11 +439,22 @@ export function registerHotelDetailsTool(
         const hotels: any[] = raw.data ?? raw.result ?? raw.accommodations ?? [];
 
         if (hotels.length === 0) {
+          // 2026-10-28: pusty data:[] dla wymyslonych ID byl oddawany jako zwykla
+          // odpowiedz, a model wnioskowal z niego "hotel nie podaje danych".
+          console.error("=== OSTRZEZENIE hotel_details: /details zwrocil pusta liste dla hotel_id=" +
+            params.hotel_id + " - ID nie istnieje (najpewniej zgadniete przez model).");
           return {
             content: [{
               type: "text",
-              text: "No details found for hotel ID " + params.hotel_id,
+              text: "ERROR: hotel_id " + params.hotel_id + " does not exist on Booking.com - it was most likely " +
+                "guessed or reconstructed from memory, not copied from a tool response in this turn. This says " +
+                "NOTHING about the hotel's parking, amenities or data - do NOT tell the user the hotel has no " +
+                "information. Get the real id: call booking_find_hotel with the hotel name, city and country, then " +
+                "call booking_get_hotel_details again. If the user asks about parking for several hotels from a " +
+                "previous search list, instead repeat booking_search_hotels with the same parameters plus " +
+                "include_parking:true.",
             }],
+            isError: true,
           };
         }
 
