@@ -114,6 +114,31 @@ function isInHolidayBlackout(d: Date): boolean {
   return false;
 }
 
+// === DATY Z WCZESNIEJSZEGO PYTANIA W TYM CZACIE (2026-10-29) ===
+// Konsultant podal daty w pierwszym pytaniu ("5-6.11"), a w kolejnym ("hotele
+// kolo dworca") juz nie - serwer bral wtedy przykladowe daty za 3 miesiace.
+// Decyzja uzytkownika: bez nowych dat bierzemy ostatnie daty podane w tym czacie.
+const chatDates = new Map<string, { checkin: string; checkout: string; at: number }>();
+const CHAT_DATES_TTL_MS = 12 * 60 * 60 * 1000;
+
+function rememberChatDates(scope: string, checkin: string, checkout: string): void {
+  if (!scope) return;
+  chatDates.set(scope, { checkin, checkout, at: Date.now() });
+  if (chatDates.size > 2000) {
+    const oldest = chatDates.keys().next().value;
+    if (oldest !== undefined) chatDates.delete(oldest);
+  }
+}
+
+function recentChatDates(scope: string): { checkin: string; checkout: string } | null {
+  if (!scope) return null;
+  const hit = chatDates.get(scope);
+  if (!hit || Date.now() - hit.at > CHAT_DATES_TTL_MS) return null;
+  const today = new Date().toISOString().split("T")[0];
+  if (hit.checkin < today) return null;
+  return { checkin: hit.checkin, checkout: hit.checkout };
+}
+
 function getDefaultDates(): { checkin: string; checkout: string } {
   const base = new Date();
   base.setDate(base.getDate() + 90);
@@ -467,7 +492,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels or apartments.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional: without them sample prices for a weekend about 3 months ahead are returned - say they are sample dates.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels or apartments.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -650,6 +675,20 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       let checkin = params.checkin;
       let checkout = params.checkout;
       let datesAssumed = false;
+      let datesFromChat = false;
+
+      if (checkin && checkout) {
+        rememberChatDates(scope, checkin, checkout);
+      } else if (!checkin && !checkout && recentChatDates(scope)) {
+        const prev = recentChatDates(scope)!;
+        checkin = prev.checkin;
+        checkout = prev.checkout;
+        datesFromChat = true;
+        if (!widen) {
+          console.error("=== DIAG daty: brak dat w zapytaniu - biore daty z wczesniejszego pytania w tym czacie: " +
+            checkin + " - " + checkout + ".");
+        }
+      }
 
       if (!checkin || !checkout) {
         const defaults = getDefaultDates();
@@ -1256,7 +1295,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           output.location_note = "City-wide search - not filtered by distance to any place.";
         }
 
-        if (datesAssumed) {
+        if (datesFromChat) {
+          output.dates_note = "No dates in this request - the dates from earlier in this conversation were used: " +
+            checkin + " to " + checkout + ". Mention these dates; the user can give other dates.";
+        } else if (datesAssumed) {
           output.dates_note = "No dates given - sample prices for " + checkin + " to " + checkout + ". Tell the user these are sample dates.";
         }
 

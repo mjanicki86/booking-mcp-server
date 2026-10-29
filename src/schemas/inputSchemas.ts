@@ -15,7 +15,7 @@ export const HotelSearchInputSchema = z.object({
   radius_km: z.number().min(0.1).max(50).optional()
     .describe('Search radius in kilometres around latitude/longitude. Pass ONLY when the user stated a distance; otherwise omit - the server applies its default. Only used with coordinates.'),
   checkin: z.string().regex(dateRegex).optional()
-    .describe('Check-in date YYYY-MM-DD. Optional - do not ask for dates; without them sample dates are used.'),
+    .describe('Check-in date YYYY-MM-DD. Optional - do not ask for dates; without them the server reuses earlier dates from this conversation or sample dates.'),
   checkout: z.string().regex(dateRegex).optional()
     .describe('Check-out date in YYYY-MM-DD format. OPTIONAL - omit if the user did not give dates.'),
   adults: z.number().int().min(1).max(30).default(1)

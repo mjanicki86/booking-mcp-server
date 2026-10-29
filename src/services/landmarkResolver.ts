@@ -134,6 +134,50 @@ function extractAllNameVariants(field: any): string[] {
   return [];
 }
 
+// === OGOLNE ZAPYTANIA O TYP MIEJSCA (test 2026-10-29) ===
+// "stacja kolejowa" w Krakowie trafilo TYLKO w Plaszow (jego polska nazwa ma
+// slowa "stacja kolejowa"; Kraków Główny w polskiej wersji to "Dworzec Główny"),
+// wiec serwer bez pytania szukal kolo Plaszowa. Gdy zapytanie sklada sie
+// wylacznie ze slow ogolnych ("dworzec", "stacja kolejowa", "lotnisko"),
+// zbieramy WSZYSTKIE miejsca tego typu w miescie - przy kilku agent pyta usera.
+type PlaceCategory = { name: string; vocab: Set<string>; required?: string[]; markers: string[] };
+const PLACE_CATEGORIES: PlaceCategory[] = [
+  {
+    name: "dworzec autobusowy",
+    vocab: new Set(["dworzec", "dworca", "dworcu", "autobusowy", "autobusowego", "autobusowym", "autobusowa",
+      "autobusowej", "bus", "coach", "station", "terminal", "stacja", "stacji"]),
+    required: ["autobus", "bus", "coach"],
+    markers: ["bus", "autobus", "coach"],
+  },
+  {
+    name: "stacja kolejowa",
+    vocab: new Set(["dworzec", "dworca", "dworcu", "stacja", "stacji", "kolejowa", "kolejowej", "kolejowy",
+      "kolejowego", "kolejowym", "kolej", "pkp", "railway", "rail", "train", "station", "pociag", "pociagu"]),
+    markers: ["railway", "train", "dworz", "dworc", "kolejow", "pkp", "bahnhof"],
+  },
+  {
+    name: "lotnisko",
+    vocab: new Set(["lotnisko", "lotniska", "lotnisku", "port", "lotniczy", "lotniczego", "lotniczym", "airport"]),
+    markers: ["airport", "lotnisk", "lotnicz"],
+  },
+];
+
+function genericCategory(tokens: string[]): PlaceCategory | null {
+  if (tokens.length === 0) return null;
+  for (const c of PLACE_CATEGORIES) {
+    if (!tokens.every((t) => c.vocab.has(t))) continue;
+    if (c.required && !tokens.some((t) => c.required!.some((r) => t.startsWith(r)))) continue;
+    return c;
+  }
+  return null;
+}
+
+// Ulice o nazwie "Kolejowa", "Dworcowa" itp. to nie dworzec.
+const STREET_TOKENS = new Set(["street", "ulica", "ul", "aleja", "avenue", "road", "strasse", "plac", "square"]);
+
+// Glowny dworzec / glowne lotnisko na poczatek listy kandydatow.
+const MAIN_PLACE_TOKENS = ["central", "glowny", "glowna", "main", "hauptbahnhof", "centralny", "international"];
+
 // Szuka punktow orientacyjnych (zabytki, dworce, lotniska, atrakcje) w obrebie
 // KONKRETNEGO miasta.
 //
@@ -161,7 +205,9 @@ export async function searchLandmarks(
   // lepiej dac szanse dopasowania niz od razu zwrocic 0 wynikow.
   const effectiveQueryTokens = queryTokens.length > 0 ? queryTokens : rawQueryTokens;
 
+  const category = genericCategory(effectiveQueryTokens);
   const results: LandmarkSearchResult[] = [];
+  const mainFlags = new Map<number, boolean>();
   const seen = new Set<number>();
 
   const cachedBefore = cityLandmarks.has(cityId);
@@ -177,19 +223,30 @@ export async function searchLandmarks(
       const nameTokens = allVariants.flatMap((v) => tokenize(v));
       if (effectiveQueryTokens.length === 0 || nameTokens.length === 0) continue;
 
-      const matches = effectiveQueryTokens.every((qt) =>
-        nameTokens.some((nt) => tokensMatch(nt, qt))
-      );
+      const matches = category
+        ? nameTokens.some((nt) => category.markers.some((m) => nt.startsWith(m))) &&
+          (category.name !== "stacja kolejowa" || !nameTokens.some((nt) => nt.startsWith("bus") || nt.startsWith("autobus"))) &&
+          !nameTokens.some((nt) => STREET_TOKENS.has(nt))
+        : effectiveQueryTokens.every((qt) =>
+            nameTokens.some((nt) => tokensMatch(nt, qt))
+          );
 
       if (matches && !seen.has(entry.id)) {
         seen.add(entry.id);
         results.push({ landmark_id: entry.id, name: displayName, latitude: lat, longitude: lon });
-        if (results.length >= limit) break;
+        mainFlags.set(entry.id, nameTokens.some((nt) => MAIN_PLACE_TOKENS.indexOf(nt) !== -1));
+        // Przy typie miejsca zbieramy wszystkie (zeby glowny dworzec nie wypadl za limitem), tniemy po sortowaniu.
+        if (!category && results.length >= limit) break;
       }
     }
   }
+  if (category) {
+    results.sort((a, b) => Number(mainFlags.get(b.landmark_id) ?? false) - Number(mainFlags.get(a.landmark_id) ?? false));
+    if (results.length > limit) results.length = limit;
+  }
 
   console.error("=== DIAG searchLandmarks: query=\"" + query + "\"" + (cachedBefore ? " [lista miasta z cache]" : "") +
+    (category ? " [ogolny typ miejsca: " + category.name + " - wszystkie takie miejsca w miescie]" : "") +
     " (efektywne tokeny: " +
     JSON.stringify(effectiveQueryTokens) + ") -> " + results.length +
     " dopasowan: " + JSON.stringify(results.map((r) => r.name)));
