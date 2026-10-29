@@ -229,10 +229,10 @@ function buildParkingSummary(fd: any, currency: string | null, facilityTexts: st
   }
   const parkingFacilities = facilityTexts.filter((t) => /parking|garaz|garage/i.test(t));
   if (parkingFacilities.length > 0) {
-    return "Booking.com API nie podaje szczegolow parkingu (cena/typ), ale lista udogodnien zawiera: " +
+    return "Booking.com nie podaje szczegółów parkingu (cena/typ), ale lista udogodnień zawiera: " +
       parkingFacilities.join("; ") + ".";
   }
-  return "Booking.com API nie zwraca dla tego obiektu zadnych informacji o parkingu.";
+  return "Brak informacji o parkingu w Booking.com.";
 }
 
 function extractText(field: any): string | null {

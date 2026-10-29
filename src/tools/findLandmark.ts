@@ -93,14 +93,16 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         "search (e.g. 'within 1km of Fontanna Neptuna', 'near the central station', 'close to the " +
         "Eiffel Tower', or a plain address/square like 'plac Artura Zawiszy') - do NOT invent or guess " +
         "coordinates yourself. " +
-        "REUSE ACROSS TURNS: once you have resolved a landmark to coordinates in this conversation, " +
-        "REMEMBER those coordinates and reuse them directly in booking_search_hotels for follow-up " +
-        "requests about the same place (e.g. changing radius, price, breakfast, or removing a filter) " +
-        "- do NOT call this tool again for the same landmark and force the user to re-disambiguate " +
-        "something they already clarified earlier in the conversation. Only call this tool again if " +
-        "the user names a genuinely different place. " +
-        "After getting the result, pass the returned latitude/longitude (and a sensible radius_km) " +
-        "into booking_search_hotels instead of a plain city search. " +
+        "CALL IT AGAIN IN EVERY TURN THAT SEARCHES NEAR THE PLACE: tool results from earlier turns are " +
+        "NOT visible to you, so for a follow-up about the same place (changing stars, price, breakfast, " +
+        "radius, removing a filter) call this tool again and use exactly the coordinates it returns - " +
+        "never type coordinates from memory. If the user already picked one candidate from a " +
+        "'multiple_matches' question earlier, call it with the full name of the candidate they chose, so " +
+        "they are not asked again. " +
+        "After getting the result, pass the returned latitude/longitude into booking_search_hotels " +
+        "instead of a plain city search. Do NOT choose a radius yourself: pass radius_km ONLY when the " +
+        "user stated a distance ('w promieniu 2 km', 'do 500 m'); for 'koło', 'w pobliżu', 'near' omit " +
+        "radius_km - the server applies its default. " +
         "If status is 'no_match', tell the user the landmark could not be found by that name in that " +
         "city (even via general geocoding) and ask them to clarify or try a nearby well-known landmark " +
         "instead. " +

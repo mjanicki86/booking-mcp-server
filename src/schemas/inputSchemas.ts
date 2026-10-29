@@ -11,8 +11,9 @@ export const HotelSearchInputSchema = z.object({
     .describe('Latitude of a specific point (landmark, station, address). MANDATORY (together with longitude) whenever the user mentions a specific place or distance, e.g. "near the Palace of Culture", "within 2 km of the airport". You must supply the REAL coordinates yourself - never fall back to a plain city search and claim proximity.'),
   longitude: z.number().min(-180).max(180).optional()
     .describe('Longitude of a specific point. Must be used together with latitude.'),
-  radius_km: z.number().min(0.1).max(50).default(3)
-    .describe('Search radius in kilometres around latitude/longitude (default 3). Only used with coordinates.'),
+  // Bez .default() - promien domyslny i poszerzanie ustala serwer (hotelSearch.ts, PROMIEN DOMYSLNY).
+  radius_km: z.number().min(0.1).max(50).optional()
+    .describe('Search radius in kilometres around latitude/longitude. Pass ONLY when the user stated a distance; otherwise omit - the server applies its default. Only used with coordinates.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe('Check-in date in YYYY-MM-DD format. OPTIONAL - if the user did not give dates, DO NOT ask them; omit this and a default date about 3 months ahead will be used.'),
   checkout: z.string().regex(dateRegex).optional()
