@@ -28,8 +28,13 @@ jobs:
           git fetch --tags --force
           HEAD_SHA=$(git rev-parse HEAD)
           LAST=$(git rev-parse -q --verify "refs/tags/dev-deployed^{commit}" || echo "")
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$HEAD_SHA" = "$LAST" ]; then
-            echo "Brak nowych commitow od ostatniego wdrozenia ($LAST) - pomijam."
+          if [ "${{ github.event_name }}" = "schedule" ] && [ -z "$LAST" ]; then
+            # Pierwsze uruchomienie: dev ma juz ten kod (wdrozony 29.10 przy pushu) - tylko oznaczamy.
+            echo "Brak tagu dev-deployed - ustawiam go na $HEAD_SHA bez wdrazania."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "tag_only=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ] && git diff --quiet "$LAST" HEAD -- . ':(exclude).github'; then
+            echo "Od ostatniego wdrozenia ($LAST) brak zmian w kodzie aplikacji - pomijam."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
           else
             echo "Wdrazam $HEAD_SHA (poprzednio: ${LAST:-brak})."
@@ -67,7 +72,7 @@ jobs:
           targetPort: 8080
 
       - name: Oznacz wdrozony commit
-        if: steps.changes.outputs.deploy == 'true'
+        if: steps.changes.outputs.deploy == 'true' || steps.changes.outputs.tag_only == 'true'
         run: |
           git tag -f dev-deployed HEAD
           git push -f origin refs/tags/dev-deployed
