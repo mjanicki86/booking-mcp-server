@@ -83,11 +83,16 @@ const VILLA_BB_ACCOMMODATION_TYPE = 208;
 // City Center Apartments") ktore mimo exclude_hostels=true przechodzily filtr.
 const SERVICED_APARTMENT_ACCOMMODATION_TYPE = 219;
 
+// 216 = Guesthouses (pensjonaty) - test 2026-10-30: "Pensjonat B&B Nad Rudawa"
+// (3*) przechodzil filtr "tylko hotele". Decyzja uzytkownika: wykluczamy.
+const GUESTHOUSE_ACCOMMODATION_TYPE = 216;
+
 const EXCLUDED_ACCOMMODATION_TYPES = new Set([
   HOSTEL_ACCOMMODATION_TYPE,
   APARTMENT_ACCOMMODATION_TYPE,
   VILLA_BB_ACCOMMODATION_TYPE,
   SERVICED_APARTMENT_ACCOMMODATION_TYPE,
+  GUESTHOUSE_ACCOMMODATION_TYPE,
 ]);
 
 const AMENITY_FACILITY_IDS: Record<string, number[]> = {
@@ -571,6 +576,18 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
       }
 
+      // KOLEJNOSC PRZY WYSZUKIWANIU KOLO MIEJSCA (2026-10-30, decyzja uzytkownika):
+      // przy "4 km od Wawelu" popularnosc wstawiala hotel z 3,6 km na 1. miejsce,
+      // a hotele 0,4-0,7 km trafialy na druga strone. Kolo punktu domyslnie od
+      // najblizszego; inne sortowanie (cena, ocena, gwiazdki) zostaje bez zmian.
+      if (usingCoordinates && (params.sort_by == null || params.sort_by === "popularity") &&
+          !/popularn|popular/i.test(typeof params.user_request === "string" ? params.user_request : "")) {
+        if (!widen && params.sort_by === "popularity") {
+          console.error("=== DIAG sortowanie: wyszukiwanie kolo punktu - domyslnie od najblizszego (zamiast popularnosci).");
+        }
+        params.sort_by = "distance";
+      }
+
       // PROMIEN DOMYSLNY (v4) - patrz komentarz przy DEFAULT_NEAR_RADIUS_KM.
       let radiusSource: "user" | "default" | "widened" = "user";
       const userText = typeof params.user_request === "string" ? params.user_request.trim() : "";
@@ -963,7 +980,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           console.error("=== DIAG exclude_hostels: " + beforeExclusion + " -> " + hotels.length +
             " hoteli. Wykluczone typy: hostel(" + HOSTEL_ACCOMMODATION_TYPE + "), apartament(" +
             APARTMENT_ACCOMMODATION_TYPE + "), willa/B&B(" + VILLA_BB_ACCOMMODATION_TYPE +
-            "), serviced apartment(" + SERVICED_APARTMENT_ACCOMMODATION_TYPE + ").");
+            "), serviced apartment(" + SERVICED_APARTMENT_ACCOMMODATION_TYPE + "), pensjonat(" +
+            GUESTHOUSE_ACCOMMODATION_TYPE + ").");
           stepBreakdown.push({ step: "after_exclude_hostels_apartments_villas", count: hotels.length });
         }
 

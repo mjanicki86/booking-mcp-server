@@ -47,11 +47,11 @@ export const HotelSearchInputSchema = z.object({
   ])).optional()
     .describe("Amenities the hotel must have, only these values: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed (pets -> pets_allowed)."),
   exclude_hostels: z.boolean().default(true)
-    .describe("Hotels only (no hostels, apartments, villas, B&Bs). Default true; false only if the user accepts those."),
+    .describe("Hotels only (no hostels, apartments, villas, B&Bs, guesthouses). Default true; false only if the user accepts those."),
   results_limit: z.number().int().min(1).max(100).default(10)
     .describe("Only when the user asks for fewer than 10 hotels ('pokaż 5 najlepszych' -> 5). For more, results come in batches - do not set."),
   sort_by: z.string().default("popularity")
-    .describe('price, review_score, distance (around a point), stars or popularity (default).'),
+    .describe('price, review_score, distance, stars or popularity. Omit unless the user asks for an order - around a point the server sorts by distance, in a city by popularity.'),
 });
 
 export type HotelSearchInput = z.infer<typeof HotelSearchInputSchema>;
