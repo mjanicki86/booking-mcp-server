@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
-import { resolveCityId, searchCities } from "../services/cityResolver.js";
+import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/cityResolver.js";
 import { normalizeText } from "../services/textNormalize.js";
 import { z } from "zod";
 
@@ -351,7 +351,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code.",
+            text: await cityNotFoundMessage(client, params.city, params.country),
           }],
           isError: true,
         };

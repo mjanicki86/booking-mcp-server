@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
-import { resolveCityId } from "../services/cityResolver.js";
+import { resolveCityId, cityNotFoundMessage } from "../services/cityResolver.js";
 import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
 import { FindLandmarkInputSchema, FindLandmarkInput } from "../schemas/inputSchemas.js";
 import { RequestContext } from "../services/requestContext.js";
@@ -153,8 +153,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         return {
           content: [{
             type: "text",
-            text: "City \"" + params.city + "\" not found in country \"" + params.country +
-              "\" on Booking.com. Check the spelling and the country code, or use booking_search_cities.",
+            text: await cityNotFoundMessage(client, params.city, params.country),
           }],
           isError: true,
         };

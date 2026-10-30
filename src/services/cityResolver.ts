@@ -16,6 +16,8 @@ interface CachedCity {
 }
 
 const cityCache = new Map<string, CachedCity>();
+// Ostatnie niejednoznaczne nazwy (kraj:nazwa -> kandydaci) - dla komunikatu cityNotFoundMessage.
+const ambiguousCities = new Map<string, string[]>();
 
 // === LISTA MIAST KRAJU W CACHE (2026-10-29, przeglad optymalizacji) ===
 // resolveCityId i searchCities przechodzily CALA liste miast kraju przy kazdym
@@ -168,6 +170,43 @@ export async function resolveCityId(
     }
   }
 
+  // === NAZWA NIE IDENTYCZNA (2026-10-30, zgloszenie: "Frankfurt") ===
+  // Booking.com ma "Frankfurt am Main" i "Frankfurt (Oder)" - samo "Frankfurt"
+  // nie mialo identycznego dopasowania i agent konczyl na "sprawdz pisownie".
+  // 1) nazwa w innym jezyku z bazy Booking.com, 2) nazwa zaczynajaca sie od
+  // podanej ("Frankfurt " / "Frankfurt (" / "Frankfurt-"). Jedno miasto -> bierzemy;
+  // kilka roznych -> NIE zgadujemy, agent ma zapytac usera (decyzja uzytkownika).
+  let matchHow = "";
+  if (exactMatches.length === 0) {
+    const all = await loadCountryCities(client, normCountry);
+    for (const c of all) {
+      if (c.variants.some((v) => normalizeText(v) === normName) && !exactMatches.some((m) => m.city_id === c.id)) {
+        exactMatches.push({ city_id: c.id, name: c.name, name_variants: c.variants });
+      }
+    }
+    if (exactMatches.length > 0) matchHow = "nazwa w innym jezyku";
+    if (exactMatches.length === 0 && normName.length >= 3) {
+      const prefixed = all.filter((c) => {
+        if (c.norm.indexOf(normName) !== 0 || c.norm.length === normName.length) return false;
+        return " (-,/".indexOf(c.norm.charAt(normName.length)) !== -1;
+      });
+      const distinctNames = Array.from(new Set(prefixed.map((c) => c.name)));
+      if (distinctNames.length === 1) {
+        for (const c of prefixed) exactMatches.push({ city_id: c.id, name: c.name, name_variants: c.variants });
+        matchHow = "jedyne miasto zaczynajace sie od tej nazwy";
+      } else if (distinctNames.length > 1) {
+        ambiguousCities.set(normCountry + ":" + normName, distinctNames.slice(0, 10));
+        console.error("=== Miasto NIEJEDNOZNACZNE: \"" + cityName + "\" w kraju \"" + country + "\" -> " +
+          JSON.stringify(distinctNames.slice(0, 10)) + " - agent ma zapytac usera.");
+        return null;
+      }
+    }
+    if (matchHow) {
+      console.error("=== Miasto: \"" + cityName + "\" bez identycznej nazwy - " + matchHow + ": " +
+        JSON.stringify(Array.from(new Set(exactMatches.map((m) => m.name)))));
+    }
+  }
+
   if (exactMatches.length === 0) {
     console.error("=== Miasto NIE rozwiazane: \"" + cityName + "\" w kraju \"" + country + "\"");
     return null;
@@ -242,4 +281,34 @@ export async function searchCities(
     }
   }
   return results;
+}
+// Komunikat dla agenta, gdy resolveCityId zwrocilo null: przy kilku miastach -
+// lista do wyboru przez usera; przy braku - podobne nazwy z kraju (zamiast
+// samego "sprawdz pisownie", na ktorym agent sie zatrzymywal).
+export async function cityNotFoundMessage(client: BookingApiClient, cityName: string, country: string): Promise<string> {
+  const normCountry = country.toLowerCase().trim();
+  const normName = normalizeText(cityName);
+  const ambiguous = ambiguousCities.get(normCountry + ":" + normName);
+  if (ambiguous && ambiguous.length > 1) {
+    return "Several cities on Booking.com match \"" + cityName + "\" in country \"" + country + "\": " +
+      ambiguous.join("; ") + ". Ask the user which one they mean (list these names) and STOP - do not pick one " +
+      "yourself. Then search again with the full city name the user chose.";
+  }
+  let similar: string[] = [];
+  try {
+    const firstToken = normName.split(/[\s(,-]+/)[0] ?? "";
+    if (firstToken.length >= 3) {
+      const all = await loadCountryCities(client, normCountry);
+      similar = Array.from(new Set(all
+        .filter((c) => c.norm.indexOf(firstToken) !== -1 || c.variants.some((v) => normalizeText(v).indexOf(firstToken) !== -1))
+        .map((c) => c.name))).slice(0, 8);
+    }
+  } catch { /* pomijamy podpowiedzi */ }
+  if (similar.length > 0) {
+    return "City \"" + cityName + "\" not found in country \"" + country + "\" on Booking.com. Similar city names: " +
+      similar.join("; ") + ". If one of them clearly is what the user meant, search again with that exact name and " +
+      "tell the user which city you used; if it is not clear, ask the user.";
+  }
+  return "City \"" + cityName + "\" not found in country \"" + country + "\" on Booking.com. Ask the user to check " +
+    "the city name (in English) and the country.";
 }

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient, BookingApiRequestError, formatHotel } from "../services/bookingClient.js";
-import { resolveCityId } from "../services/cityResolver.js";
+import { resolveCityId, cityNotFoundMessage } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 import { z } from "zod";
@@ -455,7 +455,8 @@ function findLooseMatch(keyParams: Record<string, unknown>): string | null {
 type LandmarkResolution =
   | { kind: "point"; lat: number; lon: number; name: string; approximate: boolean }
   | { kind: "multiple"; candidates: string[] }
-  | { kind: "none" };
+  | { kind: "none" }
+  | { kind: "city_not_found"; message: string };
 
 let landmarkClient: BookingApiClient | null = null;
 
@@ -465,7 +466,7 @@ let landmarkClient: BookingApiClient | null = null;
 async function resolveLandmarkForSearch(name: string, city: string, country: string): Promise<LandmarkResolution> {
   if (!landmarkClient) return { kind: "none" };
   const cityResult = await resolveCityId(landmarkClient, city, country);
-  if (!cityResult) return { kind: "none" };
+  if (!cityResult) return { kind: "city_not_found", message: await cityNotFoundMessage(landmarkClient, city, country) };
   const matches = await searchLandmarks(landmarkClient, cityResult.city_id, name, 10, cityResult.name, cityResult.name_variants);
   if (matches.length > 0) {
     const diameter = matches.length === 1 ? 0 : clusterDiameterKm(matches);
@@ -534,6 +535,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             resolved.lat + ", " + resolved.lon + ")" + (resolved.approximate ? ", geokodowanie zewnetrzne" : "") + ".");
         } else {
           console.error("=== DIAG landmark_name: \"" + params.landmark_name + "\" -> " + resolved.kind + ".");
+          if (resolved.kind === "city_not_found") {
+            return { content: [{ type: "text", text: resolved.message }], isError: true };
+          }
           const out: any = resolved.kind === "multiple"
             ? {
               status: "multiple_matches",
@@ -789,7 +793,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{
               type: "text",
-              text: "City \"" + params.city + "\" not found in country \"" + params.country + "\" on Booking.com. Check the spelling and the country code, or use booking_search_cities to search.",
+              text: await cityNotFoundMessage(client, params.city!, params.country!),
             }],
             isError: true,
           };
