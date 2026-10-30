@@ -75,25 +75,15 @@ type SearchToolInput = Omit<HotelSearchInput, "radius_km"> & {
 };
 
 
-const HOSTEL_ACCOMMODATION_TYPE = 203;
-const APARTMENT_ACCOMMODATION_TYPE = 201;
-const VILLA_BB_ACCOMMODATION_TYPE = 208;
-// Potwierdzony empirycznie 2026-09-11: kolejny kod dla apartamentow/serviced
-// apartments ("Warsaw Apartments - Apartamenty Sadyba", "Mennica Residence -
-// City Center Apartments") ktore mimo exclude_hostels=true przechodzily filtr.
-const SERVICED_APARTMENT_ACCOMMODATION_TYPE = 219;
-
-// 216 = Guesthouses (pensjonaty) - test 2026-10-30: "Pensjonat B&B Nad Rudawa"
-// (3*) przechodzil filtr "tylko hotele". Decyzja uzytkownika: wykluczamy.
-const GUESTHOUSE_ACCOMMODATION_TYPE = 216;
-
-const EXCLUDED_ACCOMMODATION_TYPES = new Set([
-  HOSTEL_ACCOMMODATION_TYPE,
-  APARTMENT_ACCOMMODATION_TYPE,
-  VILLA_BB_ACCOMMODATION_TYPE,
-  SERVICED_APARTMENT_ACCOMMODATION_TYPE,
-  GUESTHOUSE_ACCOMMODATION_TYPE,
-]);
+// === TYLKO HOTELE (2026-10-30, decyzja uzytkownika: wykluczyc kazdy typ inny niz hotel) ===
+// Wczesniej lista wykluczen (hostel 203, apartament 201, B&B 208, 219, pensjonat 216)
+// przepuszczala wille, domy wakacyjne, kwatery, kempingi itd. Teraz lista DOZWOLONYCH:
+// 204 Hotels, 231 Economy hotels (np. sieci budzetowe). Typy wg Booking.com:
+// 201 Apartments, 203 Hostels, 205 Motels, 206 Resorts, 208 B&B, 210 Farm stays,
+// 213 Villas, 214 Campgrounds, 215 Boats, 216 Guesthouses, 218 Inns, 219 Condo hotels,
+// 220 Vacation homes, 221 Lodges, 222 Homestays, 224 Luxury tents, 225 Capsule hotels,
+// 228 Chalets, 235 Student accommodations. Obiekt bez typu w danych - przepuszczamy.
+const ALLOWED_HOTEL_ACCOMMODATION_TYPES = new Set([204, 231]);
 
 const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   pool: [103, 104],
@@ -974,14 +964,18 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
 
         if (params.exclude_hostels) {
           const beforeExclusion = hotels.length;
+          const rejectedTypes: Record<string, number> = {};
+          for (const h of hotels) {
+            if (h.accommodation_type_id != null && !ALLOWED_HOTEL_ACCOMMODATION_TYPES.has(h.accommodation_type_id)) {
+              rejectedTypes[h.accommodation_type_id] = (rejectedTypes[h.accommodation_type_id] ?? 0) + 1;
+            }
+          }
           hotels = hotels.filter(function (h) {
-            return h.accommodation_type_id == null || !EXCLUDED_ACCOMMODATION_TYPES.has(h.accommodation_type_id);
+            return h.accommodation_type_id == null || ALLOWED_HOTEL_ACCOMMODATION_TYPES.has(h.accommodation_type_id);
           });
           console.error("=== DIAG exclude_hostels: " + beforeExclusion + " -> " + hotels.length +
-            " hoteli. Wykluczone typy: hostel(" + HOSTEL_ACCOMMODATION_TYPE + "), apartament(" +
-            APARTMENT_ACCOMMODATION_TYPE + "), willa/B&B(" + VILLA_BB_ACCOMMODATION_TYPE +
-            "), serviced apartment(" + SERVICED_APARTMENT_ACCOMMODATION_TYPE + "), pensjonat(" +
-            GUESTHOUSE_ACCOMMODATION_TYPE + ").");
+            " hoteli (dozwolone typy: 204 hotel, 231 hotel ekonomiczny; odrzucone typy: " +
+            JSON.stringify(rejectedTypes) + ").");
           stepBreakdown.push({ step: "after_exclude_hostels_apartments_villas", count: hotels.length });
         }
 

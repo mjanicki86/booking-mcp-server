@@ -441,7 +441,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, contact. hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: give 'contact' when something has to be confirmed with the hotel.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact. hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: give 'contact' when something has to be confirmed with the hotel.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -598,6 +598,48 @@ export function registerHotelDetailsTool(
           charge: petsRaw.charge_mode ? (CHARGE_MODE_NAMES[petsRaw.charge_mode] ?? petsRaw.charge_mode) : null,
         } : null;
 
+        // === DEPOZYT, DOSTAWKI, WIEK (2026-10-30, zgloszenie: depozyt w Mercure Riga) ===
+        // API 3.1 zwraca je w hotel.policies (damage, cots_and_extra_beds, *_age).
+        // Pobieralismy policies, ale przekazywalismy tylko pets - agent pisal
+        // "brak wzmianki o depozycie", choc Booking.com go podaje.
+        const policies = hotel.policies ?? null;
+        const damage = policies?.damage ?? null;
+        const describeTiming = function (t: any): any {
+          if (!t || typeof t !== "object") return null;
+          const date = t.date ?? null;
+          return {
+            when: date ? { days_offset: date.days_offset ?? null, reference: date.reference_date ?? null } : null,
+            payment_method: t.payment_method ?? null,
+          };
+        };
+        const damageDeposit = damage && (damage.amount != null || damage.deposit) ? {
+          amount: damage.amount ?? null,
+          currency: damage.currency ?? hotelCurrency ?? null,
+          collected: describeTiming(damage.deposit?.collect),
+          refunded: describeTiming(damage.deposit?.refund),
+        } : null;
+        const cotsRaw = policies?.cots_and_extra_beds;
+        const cotsAndExtraBeds = Array.isArray(cotsRaw) && cotsRaw.length > 0
+          ? cotsRaw.map(function (c: any) {
+              return {
+                type: c?.type ?? null,
+                age_from: c?.age?.from ?? null,
+                age_to: c?.age?.to ?? null,
+                charge: c?.mode ?? null,
+                price: c?.price ?? null,
+              };
+            })
+          : (cotsRaw && typeof cotsRaw === "object" && !Array.isArray(cotsRaw) ? cotsRaw : null);
+        const ageRules = policies && (policies.minimum_checkin_age != null || policies.maximum_checkin_age != null ||
+          policies.minimum_guest_age != null) ? {
+            minimum_checkin_age: policies.minimum_checkin_age ?? null,
+            maximum_checkin_age: policies.maximum_checkin_age ?? null,
+            minimum_guest_age: policies.minimum_guest_age ?? null,
+          } : null;
+        console.error("=== DIAG hotel_details " + params.hotel_id + ": depozyt=" +
+          (damageDeposit ? JSON.stringify(damageDeposit) : "brak w danych") +
+          ", dostawki=" + (cotsAndExtraBeds ? "tak" : "brak") + ", wiek=" + (ageRules ? JSON.stringify(ageRules) : "brak"));
+
         // Kontakt do obiektu (dane "trader" z opisu) - konsultanci potrzebuja
         // telefonu/maila recepcji, np. do potwierdzenia miejsca parkingowego.
         const trader = hotel.description?.trader ?? null;
@@ -632,6 +674,14 @@ export function registerHotelDetailsTool(
           rooms: rooms,
           payment: payment,
           pets: pets,
+          damage_deposit: damageDeposit,
+          damage_deposit_note: damageDeposit
+            ? "Refundable damage deposit reported by Booking.com - give the amount, when and how it is collected " +
+              "(days_offset relative to reference, e.g. arrival) and when it is refunded."
+            : "Booking.com does not report a damage deposit for this hotel. If asked, say Booking.com has no " +
+              "information about a deposit (not that there is none) and suggest checking with the hotel.",
+          cots_and_extra_beds: cotsAndExtraBeds,
+          age_rules: ageRules,
           url: hotel.url ?? null,
           display_instruction: hotel.url
             ? "End your answer with this link to the property page: [" + name + " na Booking.com](" + hotel.url + ")"
