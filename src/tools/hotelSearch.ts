@@ -114,7 +114,10 @@ function isInHolidayBlackout(d: Date): boolean {
 // kolo dworca") juz nie - serwer bral wtedy przykladowe daty za 3 miesiace.
 // Decyzja uzytkownika: bez nowych dat bierzemy ostatnie daty podane w tym czacie.
 const chatDates = new Map<string, { checkin: string; checkout: string; at: number }>();
-const CHAT_DATES_TTL_MS = 12 * 60 * 60 * 1000;
+// 60 min od OSTATNIEGO wyszukiwania w czacie (okno przesuwne). Wczesniej 12 h -
+// test 2026-10-30: "nowa sesja" w Teams po 5 h dostala daty z porannej rozmowy
+// (Teams 1:1 z botem to jeden czat - serwer nie widzi nowej sesji).
+const CHAT_DATES_TTL_MS = 60 * 60 * 1000;
 
 function rememberChatDates(scope: string, checkin: string, checkout: string): void {
   if (!scope) return;
@@ -131,6 +134,7 @@ function recentChatDates(scope: string): { checkin: string; checkout: string } |
   if (!hit || Date.now() - hit.at > CHAT_DATES_TTL_MS) return null;
   const today = new Date().toISOString().split("T")[0];
   if (hit.checkin < today) return null;
+  hit.at = Date.now();
   return { checkin: hit.checkin, checkout: hit.checkout };
 }
 
@@ -1312,8 +1316,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         }
 
         if (datesFromChat) {
-          output.dates_note = "No dates in this request - the dates from earlier in this conversation were used: " +
-            checkin + " to " + checkout + ". Mention these dates; the user can give other dates.";
+          output.dates_note = "No dates in this request - the dates from an earlier question in this conversation " +
+            "were used: " + checkin + " to " + checkout + ". Start your answer by saying so explicitly, e.g. " +
+            "'Przyjąłem daty z wcześniejszego pytania: …' - and that the user can give other dates.";
         } else if (datesAssumed) {
           output.dates_note = "No dates given - sample prices for " + checkin + " to " + checkout + ". Tell the user these are sample dates.";
         }
