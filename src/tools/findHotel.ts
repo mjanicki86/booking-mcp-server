@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/cityResolver.js";
 import { normalizeText } from "../services/textNormalize.js";
+import { RequestContext } from "../services/requestContext.js";
 import { z } from "zod";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -34,6 +35,7 @@ interface InventoryEntry {
   names: string[];       // wszystkie warianty jezykowe nazwy (en-gb, pl, ...)
   address: string | null;
   booking_url: string | null;
+  accommodation_type?: number | null;
 }
 
 interface HotelCandidate {
@@ -106,6 +108,7 @@ function toInventoryEntry(d: any): InventoryEntry | null {
     names,
     address: address ? (city ? address + ", " + city : address) : null,
     booking_url: typeof d.url === "string" ? d.url : null,
+    accommodation_type: typeof d.accommodation_type === "number" ? d.accommodation_type : null,
   };
 }
 
@@ -284,6 +287,12 @@ function addressMatches(hotelAddress: string | null, addressHint: string): boole
   return hintTokens.some((ht) => addressTokens.some((at) => tokensMatch(at, ht)));
 }
 
+// Klucz porownania "identycznej" nazwy: bez wielkosci liter, znakow diakrytycznych i interpunkcji.
+function exactNameKey(name: string): string {
+  return tokenize(name).join(" ");
+}
+const HOTEL_LIKE_TYPES = new Set([204, 205, 206, 218, 231]);
+
 function entryMatches(e: InventoryEntry, searchName: string): boolean {
   return e.names.some((n) => isMatch(n, searchName));
 }
@@ -309,7 +318,7 @@ function reply(output: any) {
   };
 }
 
-export function registerFindHotelTool(server: McpServer, client: BookingApiClient): void {
+export function registerFindHotelTool(server: McpServer, client: BookingApiClient, ctx?: RequestContext): void {
   server.registerTool(
     "booking_find_hotel",
     {
@@ -345,7 +354,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
     },
     async (params: FindHotelInput) => {
       const started = Date.now();
-      const cityResult = await resolveCityId(client, params.city, params.country);
+      const cityResult = await resolveCityId(client, params.city, params.country, ctx?.chatId ?? "");
 
       if (!cityResult) {
         return {
@@ -393,6 +402,28 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         console.error("=== DIAG booking_find_hotel: \"" + searchName + "\" w city=" + cityResult.city_id +
           " (" + inventory.length + " obiektow): " + matchedEntries.length + " pelnych dopasowan, " +
           (Date.now() - started) + " ms");
+
+        // --- Identyczna nazwa ma pierwszenstwo (31.10) ----------------------
+        // "Hotel Wawel" mialo 45 "pelnych dopasowan" (Wawel w nazwach apartamentow) -
+        // agent dopytywal, choc obiekt o dokladnie tej nazwie byl jeden.
+        const exactKey = exactNameKey(searchName);
+        const exactEntries = matchedEntries.filter((e) => e.names.some((n) => exactNameKey(n) === exactKey));
+        if (exactEntries.length === 1 && matchedEntries.length > 1) {
+          console.error("=== DIAG booking_find_hotel: identyczna nazwa \"" + exactEntries[0].name + "\" - wybieram ja z " +
+            matchedEntries.length + " dopasowan.");
+          return reply({
+            status: "single_match",
+            hotel: toCandidate(exactEntries[0], hint),
+            data_source: "Booking.com API",
+            note: "Exact name match. " + (matchedEntries.length - 1) + " other properties have similar names - " +
+              "if the user meant another one, they can give the address.",
+          });
+        }
+        // Kolejnosc kandydatow: identyczna nazwa, potem hotele, potem reszta.
+        const rank = (e: InventoryEntry): number =>
+          (e.names.some((n) => exactNameKey(n) === exactKey) ? 0 : 2) +
+          (e.accommodation_type != null && HOTEL_LIKE_TYPES.has(e.accommodation_type) ? 0 : 1);
+        matchedEntries = matchedEntries.slice().sort((a, b) => rank(a) - rank(b));
 
         // --- Pelne dopasowania -------------------------------------------
         if (matchedEntries.length === 1) {

@@ -550,7 +550,7 @@ export function registerHotelDetailsTool(
         let mealPrices: any = null;
         if (hotel.meal_prices && typeof hotel.meal_prices === "object") {
           const mp: any = {};
-          if (hotel.meal_prices.breakfast != null) mp.breakfast = hotel.meal_prices.breakfast;
+          if (typeof hotel.meal_prices.breakfast === "number" && hotel.meal_prices.breakfast >= 1) mp.breakfast = hotel.meal_prices.breakfast;
           if (hotel.meal_prices.lunch != null) mp.lunch = hotel.meal_prices.lunch;
           if (hotel.meal_prices.dinner != null) mp.dinner = hotel.meal_prices.dinner;
           if (Object.keys(mp).length > 0) {

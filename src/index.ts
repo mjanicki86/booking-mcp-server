@@ -100,7 +100,7 @@ function buildServer(ctx: RequestContext): McpServer {
   registerHotelSearchTool(server, apiClient, ctx);
   registerSearchCitiesTool(server, apiClient);
   registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
-  registerFindHotelTool(server, apiClient);
+  registerFindHotelTool(server, apiClient, ctx);
   registerFindLandmarkTool(server, apiClient, ctx);
 
   return server;

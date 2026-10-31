@@ -416,7 +416,8 @@ export class BookingApiClient {
             };
           }
           const breakfastPrice = d.meal_prices?.breakfast;
-          if (d.id != null && typeof breakfastPrice === "number") {
+          // < 1 (np. 0,10 PLN) to smieciowa wartosc w danych Booking.com (test 31.10, Bubble Hostel) - pomijamy.
+          if (d.id != null && typeof breakfastPrice === "number" && breakfastPrice >= 1) {
             breakfastPriceById[d.id] = breakfastPrice;
           }
         }

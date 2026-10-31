@@ -148,7 +148,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
       },
     },
     async (params: FindLandmarkInput) => applyRepeatGuard(countRepeat(ctx, params), params, await (async () => {
-      const cityResult = await resolveCityId(client, params.city, params.country);
+      const cityResult = await resolveCityId(client, params.city, params.country, ctx.chatId ?? "");
       if (!cityResult) {
         return {
           content: [{

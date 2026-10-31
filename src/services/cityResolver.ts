@@ -19,6 +19,22 @@ const cityCache = new Map<string, CachedCity>();
 // Ostatnie niejednoznaczne nazwy (kraj:nazwa -> kandydaci) - dla komunikatu cityNotFoundMessage.
 const ambiguousCities = new Map<string, string[]>();
 
+// === WYBOR MIASTA PAMIETANY W CZACIE (31.10) ===
+// Po pytaniu "Frankfurt/Main czy Frankfurt/Oder?" i wyborze usera agent w kolejnej
+// wiadomosci znow wysylal samo "Frankfurt" (nie widzi poprzednich tur) - serwer
+// pytal drugi raz. Teraz: pytanie zapamietane per czat, wybor kandydata zapisany
+// jako "Frankfurt" -> "Frankfurt/Main" dla tego czatu. 60 min od ostatniego uzycia.
+const CITY_CHOICE_TTL_MS = 60 * 60 * 1000;
+const pendingCityQuestion = new Map<string, { key: string; candidates: string[]; at: number }>();
+const cityChoices = new Map<string, { name: string; at: number }>();
+
+function trimMap(m: Map<string, unknown>): void {
+  if (m.size > 2000) {
+    const oldest = m.keys().next().value;
+    if (oldest !== undefined) m.delete(oldest);
+  }
+}
+
 // === LISTA MIAST KRAJU W CACHE (2026-10-29, przeglad optymalizacji) ===
 // resolveCityId i searchCities przechodzily CALA liste miast kraju przy kazdym
 // wywolaniu (Polska: kilka stron po 1000, ~1,3 s). Prewarm 7 miast robil to
@@ -143,11 +159,48 @@ async function countHotelsForCity(client: BookingApiClient, cityId: number): Pro
 export async function resolveCityId(
   client: BookingApiClient,
   cityName: string,
-  country: string
+  country: string,
+  scope?: string
 ): Promise<CitySearchResult | null> {
   const normCountry = country.toLowerCase().trim();
   const normName = normalizeText(cityName);
   const cacheKey = normCountry + ":" + normName;
+
+  if (scope) {
+    const choice = cityChoices.get(scope + "|" + cacheKey);
+    if (choice && Date.now() - choice.at <= CITY_CHOICE_TTL_MS && normalizeText(choice.name) !== normName) {
+      choice.at = Date.now();
+      console.error("=== Miasto: \"" + cityName + "\" -> " + choice.name + " (wybor usera wczesniej w tym czacie).");
+      return resolveCityId(client, choice.name, country);
+    }
+  }
+  const result = await resolveCityIdInner(client, cityName, country, normCountry, normName, cacheKey);
+  if (scope) {
+    if (!result && ambiguousCities.has(cacheKey)) {
+      pendingCityQuestion.set(scope, { key: cacheKey, candidates: ambiguousCities.get(cacheKey)!, at: Date.now() });
+      trimMap(pendingCityQuestion);
+    } else if (result) {
+      const pending = pendingCityQuestion.get(scope);
+      if (pending && Date.now() - pending.at <= CITY_CHOICE_TTL_MS && pending.key !== cacheKey &&
+          pending.candidates.some((c) => normalizeText(c) === normalizeText(result.name))) {
+        cityChoices.set(scope + "|" + pending.key, { name: result.name, at: Date.now() });
+        trimMap(cityChoices);
+        pendingCityQuestion.delete(scope);
+        console.error("=== Miasto: zapamietany wybor w tym czacie: \"" + pending.key.split(":")[1] + "\" -> " + result.name + ".");
+      }
+    }
+  }
+  return result;
+}
+
+async function resolveCityIdInner(
+  client: BookingApiClient,
+  cityName: string,
+  country: string,
+  normCountry: string,
+  normName: string,
+  cacheKey: string
+): Promise<CitySearchResult | null> {
 
   const cached = cityCache.get(cacheKey);
   if (cached) {

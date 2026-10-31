@@ -10,6 +10,7 @@ import {
 } from "../services/resultStore.js";
 import { fetchParkingSummaries } from "./hotelDetails.js";
 import { RequestContext } from "../services/requestContext.js";
+import { normalizeText } from "../services/textNormalize.js";
 import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
 import { LANDMARK_CLUSTER_DIAMETER_KM, clusterDiameterKm, getCoords, landmarkLabel } from "./findLandmark.js";
 
@@ -83,7 +84,9 @@ type SearchToolInput = Omit<HotelSearchInput, "radius_km"> & {
 // 213 Villas, 214 Campgrounds, 215 Boats, 216 Guesthouses, 218 Inns, 219 Condo hotels,
 // 220 Vacation homes, 221 Lodges, 222 Homestays, 224 Luxury tents, 225 Capsule hotels,
 // 228 Chalets, 235 Student accommodations. Obiekt bez typu w danych - przepuszczamy.
-const ALLOWED_HOTEL_ACCOMMODATION_TYPES = new Set([204, 231]);
+// 31.10 (decyzja uzytkownika): dopuszczone tez 205 motel, 206 resort, 218 zajazd -
+// formaty hotelowe (np. hotel z SPA nad morzem, podmiejski zajazd z pokojami).
+const ALLOWED_HOTEL_ACCOMMODATION_TYPES = new Set([204, 205, 206, 218, 231]);
 
 const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   pool: [103, 104],
@@ -136,6 +139,39 @@ function recentChatDates(scope: string): { checkin: string; checkout: string } |
   if (hit.checkin < today) return null;
   hit.at = Date.now();
   return { checkin: hit.checkin, checkout: hit.checkout };
+}
+
+// Ostatnie miasto/kraj wyszukiwania w czacie (60 min od ostatniego uzycia) - fallback,
+// gdy agent poda landmark_name bez city/country.
+const chatLocation = new Map<string, { city: string; country: string; at: number }>();
+function rememberChatLocation(scope: string, city: string, country: string): void {
+  if (!scope) return;
+  chatLocation.set(scope, { city, country, at: Date.now() });
+  if (chatLocation.size > 2000) {
+    const oldest = chatLocation.keys().next().value;
+    if (oldest !== undefined) chatLocation.delete(oldest);
+  }
+}
+function recentChatLocation(scope: string): { city: string; country: string } | null {
+  if (!scope) return null;
+  const hit = chatLocation.get(scope);
+  if (!hit || Date.now() - hit.at > CHAT_DATES_TTL_MS) return null;
+  return { city: hit.city, country: hit.country };
+}
+const COUNTRY_NAME_CODES: Record<string, string> = {
+  poland: "pl", polska: "pl", germany: "de", niemcy: "de", deutschland: "de", latvia: "lv", lotwa: "lv",
+  lithuania: "lt", litwa: "lt", czechia: "cz", "czech republic": "cz", czechy: "cz", austria: "at",
+  france: "fr", francja: "fr", italy: "it", wlochy: "it", spain: "es", hiszpania: "es", "united kingdom": "gb",
+  uk: "gb", "wielka brytania": "gb", netherlands: "nl", holandia: "nl", belgium: "be", belgia: "be",
+  portugal: "pt", portugalia: "pt", hungary: "hu", wegry: "hu", slovakia: "sk", slowacja: "sk",
+  sweden: "se", szwecja: "se", norway: "no", norwegia: "no", denmark: "dk", dania: "dk", estonia: "ee",
+  finland: "fi", finlandia: "fi", switzerland: "ch", szwajcaria: "ch", croatia: "hr", chorwacja: "hr",
+  greece: "gr", grecja: "gr", ireland: "ie", irlandia: "ie", romania: "ro", rumunia: "ro", bulgaria: "bg",
+};
+function countryCodeFromName(name: string): string | null {
+  const n = normalizeText(name);
+  if (/^[a-z]{2}$/.test(n)) return n;
+  return COUNTRY_NAME_CODES[n] ?? null;
 }
 
 function getDefaultDates(): { checkin: string; checkout: string } {
@@ -467,9 +503,9 @@ let landmarkClient: BookingApiClient | null = null;
 // Ta sama logika co booking_find_landmark: jedno dopasowanie albo kilka wpisow
 // tego samego miejsca (do LANDMARK_CLUSTER_DIAMETER_KM) -> punkt; kilka roznych
 // miejsc -> pytanie do usera; brak -> geokodowanie zewnetrzne.
-async function resolveLandmarkForSearch(name: string, city: string, country: string): Promise<LandmarkResolution> {
+async function resolveLandmarkForSearch(name: string, city: string, country: string, scope: string): Promise<LandmarkResolution> {
   if (!landmarkClient) return { kind: "none" };
-  const cityResult = await resolveCityId(landmarkClient, city, country);
+  const cityResult = await resolveCityId(landmarkClient, city, country, scope);
   if (!cityResult) return { kind: "city_not_found", message: await cityNotFoundMessage(landmarkClient, city, country) };
   const matches = await searchLandmarks(landmarkClient, cityResult.city_id, name, 10, cityResult.name, cityResult.name_variants);
   if (matches.length > 0) {
@@ -492,7 +528,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels or apartments.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -523,6 +559,29 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       let landmarkResolvedName: string | null = null;
       if (!widen && params.latitude == null && typeof params.landmark_name === "string" &&
           params.landmark_name.trim().length >= 2) {
+        // Miasto z nazwy miejsca ("Krakow Plaszow Railway Station, Krakow, Poland") albo z ostatniego
+        // wyszukiwania w tym czacie (31.10: agent po wyborze Plaszowa zapomnial pola city/country,
+        // serwer odrzucil zapytanie, a user dostal liste z Dworca Glownego).
+        if (!params.city || !params.country) {
+          const parts = params.landmark_name.split(",").map((x) => x.trim()).filter(Boolean);
+          const last = recentChatLocation(scope);
+          if (parts.length >= 2) {
+            params.landmark_name = parts[0];
+            if (!params.city) params.city = parts[1];
+            if (!params.country) {
+              const fromName = parts.length >= 3 ? countryCodeFromName(parts[parts.length - 1]) : null;
+              params.country = fromName ?? (last && normalizeText(last.city) === normalizeText(params.city) ? last.country : undefined);
+            }
+          }
+          if ((!params.city || !params.country) && last) {
+            if (!params.city) params.city = last.city;
+            if (!params.country) params.country = last.country;
+          }
+          if (params.city && params.country) {
+            console.error("=== DIAG landmark_name bez miasta od agenta - uzupelniam: city=\"" + params.city +
+              "\", country=\"" + params.country + "\", miejsce=\"" + params.landmark_name + "\".");
+          }
+        }
         if (!params.city || !params.country) {
           return {
             content: [{ type: "text", text: "landmark_name needs city (in English) and country. Ask the user which city " +
@@ -530,8 +589,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             isError: true,
           };
         }
-        const resolved = await resolveLandmarkForSearch(params.landmark_name.trim(), params.city, params.country);
+        const resolved = await resolveLandmarkForSearch(params.landmark_name.trim(), params.city, params.country, scope);
         if (resolved.kind === "point") {
+          rememberChatLocation(scope, params.city, params.country);
           params.latitude = resolved.lat;
           params.longitude = resolved.lon;
           landmarkResolvedName = resolved.name;
@@ -792,7 +852,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         locationLabel = (landmarkResolvedName ? landmarkResolvedName + " " : "") + "point (" + params.latitude + ", " +
           params.longitude + "), radius " + params.radius_km + " km";
       } else {
-        const cityResult = await resolveCityId(client, params.city!, params.country!);
+        const cityResult = await resolveCityId(client, params.city!, params.country!, scope);
         if (!cityResult) {
           return {
             content: [{
@@ -802,6 +862,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             isError: true,
           };
         }
+        rememberChatLocation(scope, params.city!, params.country!);
         locationPart = { city: cityResult.city_id };
         locationLabel = cityResult.name;
         cityIdForOutput = cityResult.city_id;
@@ -982,7 +1043,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             return h.accommodation_type_id == null || ALLOWED_HOTEL_ACCOMMODATION_TYPES.has(h.accommodation_type_id);
           });
           console.error("=== DIAG exclude_hostels: " + beforeExclusion + " -> " + hotels.length +
-            " hoteli (dozwolone typy: 204 hotel, 231 hotel ekonomiczny; odrzucone typy: " +
+            " hoteli (dozwolone typy: 204 hotel, 205 motel, 206 resort, 218 zajazd, 231 hotel ekonomiczny; odrzucone typy: " +
             JSON.stringify(rejectedTypes) + ").");
           stepBreakdown.push({ step: "after_exclude_hostels_apartments_villas", count: hotels.length });
         }
@@ -1313,6 +1374,15 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             (params.sort_by === "distance" ? " (sorted by distance)." : ".");
         } else {
           output.location_note = "City-wide search - not filtered by distance to any place.";
+        }
+
+        // Gwiazdki + inne typy obiektow (31.10): Booking.com nie zwraca obiektow bez
+        // kategorii przy filtrze gwiazdek - mowimy o tym wprost (decyzja: wariant 1).
+        if (params.exclude_hostels === false && params.min_stars != null) {
+          output.star_filter_note = "Other property types are included, but only those with " + params.min_stars +
+            (params.exact_stars ? "" : "+") + " stars. Tell the user in one sentence that properties without an " +
+            "official star category (many guesthouses, hostels, apartments) are not included and that they can ask " +
+            "to see them without the star filter.";
         }
 
         if (datesFromChat) {
