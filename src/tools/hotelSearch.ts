@@ -174,6 +174,10 @@ function countryCodeFromName(name: string): string | null {
   return COUNTRY_NAME_CODES[n] ?? null;
 }
 
+// Slowa wskazujace, ze user pyta o hotele przy konkretnym miejscu (patrz "PROSBA O HOTELE PRZY MIEJSCU").
+const NEAR_PLACE_RE = /(^|[^\p{L}])(ko[lł]o|przy|w pobli[zż]u|blisko|obok|niedaleko|dworz\p{L}*|dworc\p{L}*|stacj\p{L}*|lotnisk\p{L}*|near|close to|next to|airport|station)([^\p{L}]|$)/iu;
+const nearPlaceGuard = new Map<string, number>();
+
 function getDefaultDates(): { checkin: string; checkout: string } {
   const base = new Date();
   base.setDate(base.getDate() + 90);
@@ -617,6 +621,35 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             };
           return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
         }
+      }
+
+      // === PROSBA O HOTELE PRZY MIEJSCU BEZ MIEJSCA (31.10) ===
+      // Hotelowy (bez posredniego agenta MCP) wyslal "hotele przy stacji kolejowej w krakowie"
+      // jako samo miasto - user dostal 86 hoteli z calego Krakowa (z lotniskiem na 1. miejscu).
+      // Odsylamy agenta po landmark_name zamiast szukac po calym miescie. Raz na prosbe -
+      // gdy agent wroci znow bez miejsca, szukamy po miescie (bez petli).
+      if (!widen && !params.continue_previous && params.latitude == null && !params.landmark_name &&
+          typeof params.user_request === "string" && NEAR_PLACE_RE.test(params.user_request)) {
+        const guardKey = scope + "|" + params.user_request.trim().toLowerCase();
+        const last = nearPlaceGuard.get(guardKey);
+        if (!last || Date.now() - last > 60 * 1000) {
+          nearPlaceGuard.set(guardKey, Date.now());
+          if (nearPlaceGuard.size > 2000) {
+            const oldest = nearPlaceGuard.keys().next().value;
+            if (oldest !== undefined) nearPlaceGuard.delete(oldest);
+          }
+          console.error("=== DIAG miejsce: user_request wskazuje miejsce (\"" + params.user_request.slice(0, 120) +
+            "\"), a agent nie podal landmark_name - odsylam po landmark_name zamiast szukac po calym miescie.");
+          return {
+            content: [{ type: "text", text: "The request is about hotels near a specific place (\"" +
+              params.user_request.slice(0, 200) + "\"), but no landmark_name was given, so a search would cover the " +
+              "whole city. Call booking_search_hotels again now with landmark_name set to that place (e.g. the " +
+              "station, airport or monument named by the user) plus city and country. Do not show anything to the " +
+              "user before that." }],
+            isError: true,
+          };
+        }
+        console.error("=== DIAG miejsce: agent ponownie bez landmark_name - szukam po miescie.");
       }
 
       const usingCoordinates = params.latitude != null && params.longitude != null;
