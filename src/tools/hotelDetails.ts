@@ -3,6 +3,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { sanitizeForOrchestrator } from "../utils/sanitizeForOrchestrator.js";
 import { LOG_DEBUG } from "../services/bookingClient.js";
+import { brandLabel } from "../services/chains.js";
 
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
@@ -469,7 +470,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact. hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: 'contact' is the trader (company operating the property) registered on Booking.com, not necessarily the hotel reception - always follow contact_note when you give it.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: 'contact' is the trader (company operating the property) registered on Booking.com, not necessarily the hotel reception - always follow contact_note when you give it.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -682,6 +683,7 @@ export function registerHotelDetailsTool(
         const output: any = {
           hotel_id: params.hotel_id,
           name: name,
+          brand: await brandLabel(hotel.brands),
           address: address || null,
           stars: hotel.class ?? hotel.star_rating ?? hotel.rating?.stars ?? null,
           review_score: hotel.rating?.review_score ?? null,

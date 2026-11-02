@@ -48,6 +48,8 @@ export const HotelSearchInputSchema = z.object({
     .describe("Amenities the hotel must have, only these values: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed (pets -> pets_allowed)."),
   exclude_hostels: z.boolean().default(true)
     .describe("Hotels only - every other property type (hostels, apartments, guesthouses, villas, B&Bs etc.) is excluded. Default true; false only if the user accepts other property types."),
+  chain: z.string().min(2).max(80).optional()
+    .describe("Hotel chain or brand the user asked for ('Marriott', 'Hilton', 'Accor', 'ibis', 'Novotel') - the server filters by Booking.com chain/brand data. Keep it in follow-ups."),
   results_limit: z.number().int().min(1).max(100).default(10)
     .describe("Only when the user asks for fewer than 10 hotels ('pokaż 5 najlepszych' -> 5). For more, results come in batches - do not set."),
   sort_by: z.string().default("popularity")
