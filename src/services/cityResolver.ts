@@ -344,8 +344,8 @@ export async function cityNotFoundMessage(client: BookingApiClient, cityName: st
   const ambiguous = ambiguousCities.get(normCountry + ":" + normName);
   if (ambiguous && ambiguous.length > 1) {
     return "Several cities on Booking.com match \"" + cityName + "\" in country \"" + country + "\": " +
-      ambiguous.join("; ") + ". Ask the user which one they mean (list these names) and STOP - do not pick one " +
-      "yourself. Then search again with the full city name the user chose.";
+      ambiguous.join("; ") + ". Suggested reply: a question which city the user means (with these names); the " +
+      "choice belongs to the user. After the answer, search with the full city name they chose.";
   }
   let similar: string[] = [];
   try {

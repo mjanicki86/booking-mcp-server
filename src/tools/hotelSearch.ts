@@ -397,12 +397,12 @@ function serveNextBatch(key: string, entry: StoredResultSet, how: string): any {
       " ms po poprzedniej paczce (automatyczne dociaganie w tej samej turze).");
     const out = {
       status: "wait_for_user",
-      message: "Do NOT fetch more batches in this turn. Show the user ONLY the batch you already received " +
-        "(positions " + ((entry.lastServedPage - 1) * entry.page_size + 1) + "-" +
-        Math.min(entry.lastServedPage * entry.page_size, total) + " of " + total + "), then tell them they can " +
-        "write 'dalej' to see the next " + entry.page_size + ". Wait for the user's next message.",
+      message: "The next batch is served only after the user writes 'dalej'. The batch already received (positions " +
+        ((entry.lastServedPage - 1) * entry.page_size + 1) + "-" +
+        Math.min(entry.lastServedPage * entry.page_size, total) + " of " + total + ") is the complete answer for this " +
+        "message; the user can write 'dalej' for the next " + entry.page_size + ".",
     };
-    return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+    return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   }
   entry.lastAccess = Date.now();
   if (nextPage > pages) {
@@ -413,9 +413,9 @@ function serveNextBatch(key: string, entry: StoredResultSet, how: string): any {
       total_matching: total,
       location: entry.meta.location,
       message: "All " + total + " matching hotels have already been shown (positions 1-" + total + "). " +
-        "Tell the user there are no more results for this search. Do NOT list any hotels.",
+        "Suggested reply: there are no more results for this search (no hotel list in this reply).",
     };
-    return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+    return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
   }
   const batch = getPage(entry, nextPage);
   entry.lastServedPage = nextPage;
@@ -436,16 +436,15 @@ function serveNextBatch(key: string, entry: StoredResultSet, how: string): any {
     has_more: remaining > 0,
     hotels: batch,
     ...entry.meta,
-    display_instruction: "Show ONLY these " + batch.length + " hotels as a numbered list - write each hotel's " +
-      "'position' number before its name (e.g. '" + from + ". Hotel ...'), positions " +
-      from + "-" + to + ", in this exact order and in the same format as before. Every hotel name, price and " +
-      "rating you write must come from this response. " +
+    display_instruction: "Presentation: these " + batch.length + " hotels as a numbered list with each hotel's " +
+      "'position' before its name (e.g. '" + from + ". Hotel ...'), positions " + from + "-" + to + ", in this order " +
+      "and the same format as before, with names, prices and ratings from this response. " +
       (remaining > 0
-        ? "Then say " + remaining + " more remain and the user can write 'dalej'."
-        : "Then say these were the last results of this search (all " + total + " shown)."),
+        ? "After the list: " + remaining + " more remain ('dalej')."
+        : "After the list: these were the last results of this search (all " + total + " shown)."),
   };
   return {
-    content: [{ type: "text", text: JSON.stringify(out, null, 2) + "\n\n---\nSource: Booking.com API" }],
+    content: [{ type: "text", text: JSON.stringify(out) + "\n\n---\nSource: Booking.com API" }],
     structuredContent: out,
   };
 }
@@ -532,7 +531,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices are then for offers with breakfast included (hotels without such an offer are left out). Without it prices are for the cheapest offer.\n- exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If the user names several areas at once ('centrum i Wola', 'Mokotów albo Ochota'), search the whole city (city + country, without landmark_name) or ask which area they prefer - do not pick one of them. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices are then for offers with breakfast included (hotels without such an offer are left out). Without it prices are for the cheapest offer.\n- exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -609,17 +608,18 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           const out: any = resolved.kind === "multiple"
             ? {
               status: "multiple_matches",
-              message: "Several places match \"" + params.landmark_name + "\". Ask the user which one they mean (show the " +
-                "names) and STOP - do not list hotels yet. Then search again with landmark_name set to the full name " +
-                "of the chosen place.",
+              message: "Several places match \"" + params.landmark_name + "\". Suggested reply: a question which place " +
+                "the user means (with the candidate names), without a hotel list. After the answer, search with " +
+                "landmark_name set to the full name of the chosen place.",
               candidates: resolved.candidates,
             }
             : {
               status: "no_match",
               message: "Place \"" + params.landmark_name + "\" was not found in " + params.city + " (Booking.com landmarks " +
-                "and general geocoding). Tell the user and ask for another name or a nearby well-known place.",
+                "and general geocoding). Suggested reply: the place was not found - ask for another name or a nearby " +
+                "well-known place.",
             };
-          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+          return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
         }
       }
 
@@ -643,9 +643,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           return {
             content: [{ type: "text", text: "The request is about hotels near a specific place (\"" +
               params.user_request.slice(0, 200) + "\"), but no landmark_name was given, so a search would cover the " +
-              "whole city. Call booking_search_hotels again now with landmark_name set to that place (e.g. the " +
-              "station, airport or monument named by the user) plus city and country. Do not show anything to the " +
-              "user before that." }],
+              "whole city. Next step: booking_search_hotels with landmark_name set to that place (e.g. the " +
+              "station, airport or monument named by the user) plus city and country." }],
             isError: true,
           };
         }
@@ -763,12 +762,11 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         console.error("=== DIAG paging: continue_previous bez parametrow i brak aktywnej listy.");
         const out = {
           status: "no_previous_list",
-          message: "There is no active result list to continue (it expired or the server restarted). Do NOT list " +
-            "any hotels and do NOT invent results. Run booking_search_hotels again with the full parameters of the " +
-            "user's search (city/coordinates, dates, filters) WITHOUT continue_previous, and show batch 1 - telling " +
-            "the user the list was refreshed and starts from the beginning.",
+          message: "There is no active result list to continue (it expired or the server restarted), so there are no " +
+            "hotels to show from it. Next step: booking_search_hotels with the full parameters of the user's search " +
+            "(place, dates, filters) without continue_previous; the list then starts again from position 1.",
         };
-        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], structuredContent: out };
+        return { content: [{ type: "text", text: JSON.stringify(out) }], structuredContent: out };
       }
 
       if (!usingCoordinates && (!params.city || !params.country)) {
@@ -789,8 +787,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           content: [{
             type: "text",
             text: "The age of each child is needed for correct prices (children_count=" + params.children_count +
-              ", children_ages=" + JSON.stringify(params.children_ages ?? []) + "). Ask the user for the age of each " +
-              "child and search again with children_ages. Do not search without them.",
+              ", children_ages=" + JSON.stringify(params.children_ages ?? []) + "). Suggested reply: a question about " +
+              "the age of each child; then search with children_ages.",
           }],
           isError: true,
         };
@@ -1315,10 +1313,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             ? stepBreakdown[stepBreakdown.indexOf(breakfastStep) - 1]
             : null;
           if (breakfastStep && breakfastStep.count === 0 && priorToBreakfast && priorToBreakfast.count > 0) {
-            specificHint = " IMPORTANT: there WERE " + priorToBreakfast.count + " real hotel(s) matching " +
-              "location/price/type before the breakfast filter - they exist and are bookable, they just " +
-              "charge for breakfast instead of including it free. Tell the user this explicitly (e.g. name " +
-              "the hotels and their paid breakfast price) instead of saying no hotels exist nearby.";
+            specificHint = " Note: " + priorToBreakfast.count + " hotel(s) matched location/price/type before the " +
+              "breakfast filter - they exist, but have no offer with breakfast included in this price range.";
           }
 
           return {
@@ -1327,14 +1323,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
               text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout +
                 " matching ALL filters together." +
                 (widen ? " The server first searched the default " + widen.fromKm + " km around the point (0 hotels) " +
-                  "and then automatically widened to " + params.radius_km + " km - also 0 hotels. Tell the user both " +
-                  "radii were checked." : "") +
+                  "and then automatically widened to " + params.radius_km + " km - also 0 hotels (both radii checked)." : "") +
                 " Step-by-step breakdown of how many hotels survived each " +
                 "filter (found_in_location -> ... -> final): " + breakdownText + "." + specificHint +
-                " Tell the user specifically which filter caused the drop to zero, not just 'try relaxing " +
-                "filters' generically. Do NOT run another search with a relaxed filter (e.g. without min_stars) " +
-                "and present its hotels as the answer - report zero results and ASK the user whether to relax " +
-                "a filter (e.g. 'Czy pokazać hotele 4* w tej okolicy?').",
+                " Suggested reply: no hotels for these criteria, the filter that reduced the list to zero (from the " +
+                "breakdown), and a question whether to relax that filter (e.g. 'Czy pokazać hotele 4* w tej okolicy?'). " +
+                "A search with relaxed filters follows only after the user agrees.",
             }],
             structuredContent: {
               zero_results_breakdown: stepBreakdown,
@@ -1378,32 +1372,31 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           const totalPagesCount = Math.ceil(limitedAll.length / pageSize);
           output.paging_note = "This search matched " + limitedAll.length + " hotels after all filters. " +
             "This response contains hotels 1-" + formatted.length + " (batch 1 of " + totalPagesCount + "). " +
-            "Show these " + formatted.length + ", then tell the user that " + limitedAll.length +
-            " hotels match in total and they can write 'dalej' to see the next " + pageSize + ". " +
-            "For the next batch call booking_search_hotels again with EXACTLY the same parameters plus " +
-            "continue_previous:true - the server returns positions 11-20 (then 21-30, ...) from the stored list.";
+            "After these " + formatted.length + ": " + limitedAll.length + " hotels match in total, 'dalej' shows the " +
+            "next " + pageSize + ". Next batch = booking_search_hotels with the same parameters plus " +
+            "continue_previous:true (positions 11-20, then 21-30, ... from the stored list).";
           output.has_more = true;
         } else {
           output.has_more = false;
         }
 
         output.review_score_note = hotelsWithScore === 0
-          ? "No hotel here has a guest rating - say ratings are unavailable, never invent one."
+          ? "No hotel here has a guest rating (ratings unavailable)."
           : "Quote review_score as given; write 'ocena niedostępna' where it is null.";
 
         if (reviewSortUnreliable) {
           output.sort_warning = "sort_by=review_score was requested but no hotel in this set has a " +
-            "review score, so the order does NOT reflect guest ratings. Say this explicitly instead " +
-            "of presenting the list as sorted by rating.";
+            "review score, so the order does not reflect guest ratings (worth saying instead of presenting the " +
+            "list as sorted by rating).";
         }
 
-        output.display_instruction = "List all " + formatted.length + " hotels of this batch numbered with 'position' " +
-          "(1-" + formatted.length + "), in this order (already sorted - do not re-sort).";
+        output.display_instruction = "Presentation: all " + formatted.length + " hotels of this batch numbered with " +
+          "'position' (1-" + formatted.length + "), in this order (already sorted).";
 
         if (!params.breakfast_only) {
           output.breakfast_reminder = "For each hotel say whether breakfast is free (breakfast_included) or paid " +
-            "(breakfast_price_paid). If both are set, breakfast IS included and the price is an optional upgrade - " +
-            "never write 'w cenie, dodatkowo płatne'.";
+            "(breakfast_price_paid). If both are set, breakfast is included and the price is an optional upgrade " +
+            "(wording: 'w cenie, opcjonalnie lepsze śniadanie za …').";
           if (formatted.some(function (h: any) { return !h.breakfast_included; })) {
             output.breakfast_reminder += " Prices are for the cheapest offer. After the list add one sentence: " +
               "'Ceny dotyczą najtańszej oferty – napisz „ze śniadaniem w cenie”, aby zobaczyć ceny ofert ze śniadaniem.'";
@@ -1422,10 +1415,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
               "wszystkie kryteria, więc automatycznie poszerzyłem wyszukiwanie do " + params.radius_km + " km.";
           }
           if (output.radius_note) {
-            output.radius_note_instruction = "Start your reply with radius_note, replacing {miejsce} with the place " +
-              "name in the correct Polish form (e.g. 'Wawelu', 'dworca Kraków Główny'). Do not change the numbers. " +
-              "If the user explicitly asked for exactly this distance, write only 'Szukam w promieniu X km od {miejsce}.' " +
-              "without the part about the default.";
+            output.radius_note_instruction = "Reply starts with radius_note, {miejsce} replaced by the place name in " +
+              "the correct Polish form (e.g. 'Wawelu', 'dworca Kraków Główny'), numbers unchanged. When the user asked " +
+              "for exactly this distance: only 'Szukam w promieniu X km od {miejsce}.' without the part about the default.";
           }
           output.location_note = "Hotels within " + params.radius_km + " km of the point - give each hotel's distance_km" +
             (params.sort_by === "distance" ? " (sorted by distance)." : ".");
@@ -1437,23 +1429,23 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         // kategorii przy filtrze gwiazdek - mowimy o tym wprost (decyzja: wariant 1).
         if (params.exclude_hostels === false && params.min_stars != null) {
           output.star_filter_note = "Other property types are included, but only those with " + params.min_stars +
-            (params.exact_stars ? "" : "+") + " stars. Tell the user in one sentence that properties without an " +
-            "official star category (many guesthouses, hostels, apartments) are not included and that they can ask " +
-            "to see them without the star filter.";
+            (params.exact_stars ? "" : "+") + " stars. One sentence for the user: properties without an official " +
+            "star category (many guesthouses, hostels, apartments) are not included; they can ask to see them without " +
+            "the star filter.";
         }
 
         if (datesFromChat) {
           output.dates_note = "No dates in this request - the dates from an earlier question in this conversation " +
-            "were used: " + checkin + " to " + checkout + ". Start your answer by saying so explicitly, e.g. " +
-            "'Przyjąłem daty z wcześniejszego pytania: …' - and that the user can give other dates.";
+            "were used: " + checkin + " to " + checkout + ". Reply starts with e.g. 'Przyjąłem daty z wcześniejszego " +
+            "pytania: …' and mentions that the user can give other dates.";
         } else if (datesAssumed) {
-          output.dates_note = "No dates given - sample prices for " + checkin + " to " + checkout + ". Tell the user these are sample dates.";
+          output.dates_note = "No dates given - sample prices for " + checkin + " to " + checkout + " (to be mentioned as sample dates).";
         }
 
         if (result.truncated) {
           output.completeness_note = "Booking.com has more than " + result.hotels.length + " properties for this search " +
-            "and only the first " + result.hotels.length + " were checked, so this list may be incomplete. Tell the user " +
-            "briefly and suggest narrowing the search (smaller radius, star category or price).";
+            "and only the first " + result.hotels.length + " were checked, so this list may be incomplete - worth a " +
+            "short mention with a suggestion to narrow the search (smaller radius, star category or price).";
         }
 
         output.parking_note = "One 'Parking:' line per hotel from parking_summary, in your own words; for parking_kind " +
@@ -1486,10 +1478,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (continuationExpired) {
           output.continuation_note = "The user asked for the next batch, but the previous list was no longer " +
             "available (older than 1 hour or the server restarted), so this is a FRESH search starting again from " +
-            "position 1. Tell the user briefly that the list was refreshed and starts from the beginning.";
+            "position 1 (worth a short mention that the list was refreshed).";
         }
 
-        const text = JSON.stringify(output, null, 2);
+        const text = JSON.stringify(output);
         return {
           content: [{
             type: "text",

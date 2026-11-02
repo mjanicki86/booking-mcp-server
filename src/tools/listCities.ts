@@ -30,7 +30,7 @@ export function registerSearchCitiesTool(server: McpServer, client: BookingApiCl
         }
         const output = { cities: cities, total: cities.length };
         return {
-          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(output) }],
           structuredContent: output,
         };
       } catch (err) {

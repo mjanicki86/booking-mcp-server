@@ -44,15 +44,15 @@ function applyRepeatGuard(count: number, params: FindLandmarkInput, result: any)
     ? "latitude " + lat + ", longitude " + lon : "the coordinates returned in your first call";
   console.error("=== DIAG findLandmark: " + count + ". wywolanie dla \"" + params.landmark_name +
     "\" w tej samej turze" + (count >= REPEAT_HARD_STOP ? " - zwracam blad, zeby przerwac petle." : " - ostrzegam model."));
-  const instruction = "You have ALREADY resolved \"" + params.landmark_name + "\" in this turn (" + count +
-    " calls). Do NOT call booking_find_landmark again for it. Call booking_search_hotels NOW with " + coordsText +
-    (out?.status === "multiple_matches" ? ", or ask the user which place they mean and stop." : ".");
+  const instruction = "\"" + params.landmark_name + "\" was already resolved in this turn (" + count +
+    " calls), the result is unchanged. Next step: booking_search_hotels with " + coordsText +
+    (out?.status === "multiple_matches" ? ", or a question to the user which place they mean." : ".");
   if (count >= REPEAT_HARD_STOP) {
-    return { content: [{ type: "text", text: "STOP: " + instruction }], isError: true };
+    return { content: [{ type: "text", text: "Repeated call: " + instruction }], isError: true };
   }
   if (out && typeof out === "object") {
     const patched = { repeated_call_warning: instruction, ...out };
-    return { content: [{ type: "text", text: JSON.stringify(patched, null, 2) }], structuredContent: patched };
+    return { content: [{ type: "text", text: JSON.stringify(patched) }], structuredContent: patched };
   }
   return result;
 }
@@ -184,7 +184,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
                 "general geocoding, slightly less precise than a Booking.com-listed point of interest.",
             };
             return {
-              content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+              content: [{ type: "text", text: JSON.stringify(output) }],
               structuredContent: output,
             };
           }
@@ -199,7 +199,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
             data_source: "Booking.com API",
           };
           return {
-            content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(output) }],
             structuredContent: output,
           };
         }
@@ -214,7 +214,7 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
             data_source: "Booking.com API",
           };
           return {
-            content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(output) }],
             structuredContent: output,
           };
         }
@@ -241,13 +241,12 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
               explanation: "Booking.com lists this physical place under several near-identical " +
                 "names. All candidates are within " + meters + " m of each other, which is the " +
                 "same point for any kilometre-scale radius search, so one was selected " +
-                "automatically. Do NOT ask the user to disambiguate - just proceed with these " +
-                "coordinates.",
+                "automatically - no question to the user is needed, these coordinates can be used.",
             },
             data_source: "Booking.com API",
           };
           return {
-            content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(output) }],
             structuredContent: output,
           };
         }
@@ -260,15 +259,14 @@ export function registerFindLandmarkTool(server: McpServer, client: BookingApiCl
         const output = {
           status: "multiple_matches",
           message: "Found " + matches.length + " landmarks matching \"" + params.landmark_name +
-            "\" in " + cityResult.name + ". Ask the user which one they mean, then STOP and wait " +
-            "for their reply - do not pick one yourself and do not produce any hotel results " +
-            "until they answer.",
+            "\" in " + cityResult.name + ". Suggested reply: a question which one the user means (with the " +
+            "candidate names), without a hotel list; the choice belongs to the user.",
           candidates: matches,
           city: cityResult.name,
           data_source: "Booking.com API",
         };
         return {
-          content: [{ type: "text", text: JSON.stringify(output, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(output) }],
           structuredContent: output,
         };
 

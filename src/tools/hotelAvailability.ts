@@ -186,9 +186,9 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
 
       let note: string;
       if (availableCount === 0) {
-        note = "No free rooms in any checked date. Do NOT say the hotel is closed: say there are no free rooms in the " +
-          "checked dates (list them), that the hotel may be closed for the season or sold out, and suggest confirming " +
-          "with the hotel.";
+        note = "No free rooms in any checked date. Suggested wording: no free rooms in the checked dates (list them); " +
+          "the hotel may be closed for the season or sold out - worth confirming with the hotel. (No free rooms does " +
+          "not prove that the hotel is closed.)";
       } else if (mode === "first_available") {
         note = "Say the first checked date with free rooms (" + firstAvailable!.checkin + ") and that dates before it had " +
           "no free rooms (one date per month was checked, so availability may start earlier within that month).";

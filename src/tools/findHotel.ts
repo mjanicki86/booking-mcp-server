@@ -314,7 +314,7 @@ const MAX_CANDIDATES = 10;
 
 function replyBase(output: any) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
+    content: [{ type: "text" as const, text: JSON.stringify(output) + "\n\n---\nSource: Booking.com API" }],
     structuredContent: output,
   };
 }
@@ -464,7 +464,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           const output: any = {
             status: "multiple_matches",
             message: "Found " + matchedEntries.length + " properties matching \"" + searchName + "\" in " +
-              params.city + ". Ask the user which one they mean (show name and address).",
+              params.city + ". Suggested reply: a question which one the user means (name and address).",
             candidates: matchedEntries.slice(0, MAX_CANDIDATES).map((e) => toCandidate(e, hint)),
             data_source: "Booking.com API",
           };
@@ -509,9 +509,9 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           const output: any = {
             status: "partial_match",
             message: "No property exactly matches \"" + searchName + "\" in " + params.city +
-              ". Found " + partial.length + " property(ies) sharing part of the name - NOT confirmed. " +
-              "List them (name + address) and ask the user to confirm. Do not answer questions about " +
-              "any of them until the user confirms.",
+              ". Found " + partial.length + " property(ies) sharing part of the name - not confirmed. " +
+              "Suggested reply: the candidates (name + address) and a question which one the user means; details " +
+              "about a candidate follow after the user confirms it.",
             candidates: partial.slice(0, MAX_CANDIDATES).map((e) => toCandidate(e, hint)),
             data_source: "Booking.com API",
           };

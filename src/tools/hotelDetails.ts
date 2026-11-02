@@ -712,7 +712,7 @@ export function registerHotelDetailsTool(
           damage_deposit_note: damageDeposit
             ? "Refundable damage deposit reported by Booking.com - give the amount, when and how it is collected " +
               "(days_offset relative to reference, e.g. arrival) and when it is refunded."
-            : "Booking.com does not report a damage deposit for this hotel. If asked, say Booking.com has no " +
+            : "Booking.com does not report a damage deposit for this hotel. When asked: Booking.com has no " +
               "information about a deposit (not that there is none) and suggest checking with the hotel.",
           cots_and_extra_beds: cotsAndExtraBeds,
           age_rules: ageRules,
@@ -726,7 +726,7 @@ export function registerHotelDetailsTool(
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API",
+            text: JSON.stringify(output) + "\n\n---\nSource: Booking.com API",
           }],
           structuredContent: output,
         };
