@@ -210,8 +210,35 @@ function parkingKind(fd: any, facilityTexts: string[]): ParkingKind {
 
 // Zdanie po polsku, ktore model moze przekazac 1:1 - zamiast kazac mu
 // skladac odpowiedz z surowych pol (tu wlasnie gubil informacje).
-function buildParkingSummary(fd: any, currency: string | null, facilityTexts: string[]): string {
+// Udogodnienia parkingowe z listy udogodnien obiektu (02.11, zgloszenie Emilii -
+// Hotel Sumratin: garaz i miejsca dla niepelnosprawnych byly tylko w ogolnej liscie
+// 75 udogodnien, a agent na "jaki to rodzaj parkingu?" odpowiadal "brak szczegolow").
+// Nazwy wg /accommodations/constants (test 02.11).
+const PARKING_FACILITY_EXTRAS: Record<number, string> = {
+  181: "parking w garażu",
+  180: "parking przy ulicy",
+  182: "stacja ładowania aut elektrycznych",
+  184: "miejsca dla osób niepełnosprawnych",
+  52: "usługa parkingowego (valet)",
+  162: "inny parking",
+};
+
+function parkingExtras(facilityIds: number[] | undefined): string {
+  if (!facilityIds || facilityIds.length === 0) return "";
+  const extras = Object.keys(PARKING_FACILITY_EXTRAS).map(Number)
+    .filter((id) => facilityIds.indexOf(id) !== -1)
+    .map((id) => PARKING_FACILITY_EXTRAS[id]);
+  return extras.length > 0 ? " Dodatkowo wg Booking.com: " + extras.join("; ") + "." : "";
+}
+
+function facilityIdsOf(facilities: any): number[] {
+  if (!Array.isArray(facilities)) return [];
+  return facilities.map((f: any) => (typeof f === "number" ? f : f?.id)).filter((x: any) => typeof x === "number");
+}
+
+function buildParkingSummary(fd: any, currency: string | null, facilityTexts: string[], facilityIds?: number[]): string {
   const list = Array.isArray(fd?.parking_facilities) ? fd.parking_facilities : [];
+  const extras = parkingExtras(facilityIds);
   if (list.length > 0) {
     const prefix = parkingKind(fd, facilityTexts) === "public_only"
       ? "Obiekt nie ma własnego parkingu, tylko parking publiczny. "
@@ -226,13 +253,14 @@ function buildParkingSummary(fd: any, currency: string | null, facilityTexts: st
       if (typeof p.price === "number" && p.price > 0) s += " (" + p.price + (currency ? " " + currency : "") + ")";
       if (p.reservation && PARKING_RESERVATION_NAMES[p.reservation]) s += ", " + PARKING_RESERVATION_NAMES[p.reservation];
       return s + ".";
-    }).join(" ");
+    }).join(" ") + extras;
   }
   const parkingFacilities = facilityTexts.filter((t) => /parking|garaz|garage/i.test(t));
   if (parkingFacilities.length > 0) {
     return "Booking.com nie podaje szczegółów parkingu (cena/typ), ale lista udogodnień zawiera: " +
-      parkingFacilities.join("; ") + ".";
+      parkingFacilities.join("; ") + "." + extras;
   }
+  if (extras) return "Booking.com nie podaje szczegółów parkingu (cena/typ)." + extras;
   return "Brak informacji o parkingu w Booking.com.";
 }
 
@@ -346,7 +374,7 @@ function parkingInfoFromDetails(h: any, names: FacilityNames | null): ParkingInf
     }
   }
   return {
-    summary: buildParkingSummary(h.facility_details, currency, texts),
+    summary: buildParkingSummary(h.facility_details, currency, texts, facilityIdsOf(h.facilities)),
     kind: parkingKind(h.facility_details, texts),
     details: parseParkingDetails(h.facility_details, currency),
   };
@@ -542,7 +570,7 @@ export function registerHotelDetailsTool(
         }
 
         const parkingDetails = parseParkingDetails(hotel.facility_details, hotelCurrency);
-        const parkingSummary = buildParkingSummary(hotel.facility_details, hotelCurrency, facilities);
+        const parkingSummary = buildParkingSummary(hotel.facility_details, hotelCurrency, facilities, facilityIdsOf(hotel.facilities));
         console.error("=== DIAG hotel_details " + params.hotel_id + ": parking_summary=\"" + parkingSummary +
           "\", nazwy udogodnien z constants=" + (facilityNames ? "tak" : "NIE (fallback)"));
         const wifiDetails = parseWifiDetails(hotel.facility_details, hotelCurrency);
