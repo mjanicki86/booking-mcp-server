@@ -15,7 +15,7 @@ const FindHotelInputSchema = z.object({
   city: z.string().min(2).max(100)
     .describe('City where the hotel is located, IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate the city name to English before calling.'),
   country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Infer it from the city name.'),
+    .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for a code.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe("OPTIONAL and NOT required. Hotel lookup by name no longer depends on dates or availability. " +
       "Accepted only for backward compatibility; dates matter only for booking_search_hotels."),
@@ -329,6 +329,11 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "matching English and Polish property names. Dates are NOT needed. " +
         "Args: hotel_name, city (English), country (2-letter code), optional address_hint. " +
         "ADDRESS: if the user gave a street/address, ALWAYS pass it as address_hint. " +
+        "CITY: if the city is part of the hotel name or clear from the conversation (e.g. 'Bedford Swan' -> " +
+        "Bedford, gb; 'ibis Gdansk Stare Miasto' -> Gdansk, pl), use it and work out the country code yourself - " +
+        "do not ask the user. Ask only when the city is genuinely unclear, and then ask in plain words " +
+        "('W jakim mieście jest ten hotel?'), never for a country code. If a city taken from the name gives " +
+        "no_match, ask the user for the city. " +
         "CITY SPELLING: if unsure the city name is right, call booking_search_cities first; if the " +
         "name could belong to more than one country, ask the user. " +
         "AIRPORT HOTELS: often registered under a neighbouring municipality with a different name " +

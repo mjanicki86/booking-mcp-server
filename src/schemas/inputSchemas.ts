@@ -6,7 +6,7 @@ export const HotelSearchInputSchema = z.object({
   city: z.string().min(2).max(100).optional()
     .describe('City name in English, e.g. "Warsaw", "Rome". For "hotels in [city]"; not needed with latitude/longitude.'),
   country: z.string().min(2).max(2).optional()
-    .describe('Two-letter lowercase country code, e.g. "pl". Required with city.'),
+    .describe('Two-letter lowercase country code, e.g. "pl". Required with city. Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for a code.'),
   latitude: z.number().min(-90).max(90).optional()
     .describe('Usually omit - for a named place pass landmark_name instead. Only a latitude returned by a tool in this message, never typed from memory.'),
   longitude: z.number().min(-180).max(180).optional()
@@ -60,7 +60,7 @@ export const SearchCitiesInputSchema = z.object({
   query: z.string().min(2).max(100)
     .describe('City name or partial name IN ENGLISH, e.g. "War", "Amsterdam"'),
   country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code to search in, e.g. "pl", "nl"'),
+    .describe('Two-letter lowercase country code to search in, e.g. "pl", "nl". Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for a code.'),
   limit: z.number().int().min(1).max(20).default(10)
     .describe("Maximum number of results to return (default: 10)"),
 });
@@ -73,7 +73,7 @@ export const FindLandmarkInputSchema = z.object({
   city: z.string().min(2).max(100)
     .describe('City the landmark is located in, IN ENGLISH, e.g. "Warsaw", "Amsterdam".'),
   country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code, e.g. "pl", "nl".'),
+    .describe('Two-letter lowercase country code, e.g. "pl", "nl". Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for a code.'),
 });
 
 export type FindLandmarkInput = z.infer<typeof FindLandmarkInputSchema>;
