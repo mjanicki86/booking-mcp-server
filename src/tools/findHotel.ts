@@ -3,6 +3,7 @@ import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/cityResolver.js";
 import { normalizeText } from "../services/textNormalize.js";
 import { RequestContext } from "../services/requestContext.js";
+import { rememberChatHotel } from "../services/chatHotel.js";
 import { z } from "zod";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -311,7 +312,7 @@ function toCandidate(e: InventoryEntry, addressHint?: string): HotelCandidate {
 const MAX_ALTERNATIVE_CITIES = 5;
 const MAX_CANDIDATES = 10;
 
-function reply(output: any) {
+function replyBase(output: any) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) + "\n\n---\nSource: Booking.com API" }],
     structuredContent: output,
@@ -358,6 +359,13 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       },
     },
     async (params: FindHotelInput) => {
+      // Zapamietaj hotel czatu przy jednoznacznym wyniku (dla booking_check_hotel_availability).
+      const reply = (output: any) => {
+        if (output?.status === "single_match" && output.hotel?.hotel_id) {
+          rememberChatHotel(ctx?.chatId ?? "", output.hotel.hotel_id, output.hotel.name ?? null);
+        }
+        return replyBase(output);
+      };
       const started = Date.now();
       const cityResult = await resolveCityId(client, params.city, params.country, ctx?.chatId ?? "");
 

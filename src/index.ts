@@ -10,6 +10,7 @@ import { registerSearchCitiesTool } from "./tools/listCities.js";
 import { registerHotelDetailsTool, loadFacilityNames } from "./tools/hotelDetails.js";
 import { registerFindHotelTool, prewarmCity } from "./tools/findHotel.js";
 import { registerFindLandmarkTool } from "./tools/findLandmark.js";
+import { registerHotelAvailabilityTool } from "./tools/hotelAvailability.js";
 import { RequestContext, contextFromHeaders } from "./services/requestContext.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
@@ -102,6 +103,7 @@ function buildServer(ctx: RequestContext): McpServer {
   registerHotelDetailsTool(server, config.bookingApiKey, config.bookingAffiliateId);
   registerFindHotelTool(server, apiClient, ctx);
   registerFindLandmarkTool(server, apiClient, ctx);
+  registerHotelAvailabilityTool(server, apiClient, ctx);
 
   return server;
 }
