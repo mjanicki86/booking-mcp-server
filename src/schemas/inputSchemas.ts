@@ -33,7 +33,7 @@ export const HotelSearchInputSchema = z.object({
   min_price_per_night: z.number().positive().optional()
     .describe("Minimum price per night, only if the user gives a lower bound."),
   breakfast_only: z.boolean().default(false)
-    .describe("Only hotels with breakfast included in the price - set only for 'śniadanie w cenie' / 'breakfast included', not for a plain 'ze śniadaniem'."),
+    .describe("true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices of offers with breakfast included; hotels without such an offer are left out."),
   free_cancellation_only: z.boolean().default(false)
     .describe("Only return hotels with free cancellation"),
   min_stars: z.number().int().min(1).max(5).optional()

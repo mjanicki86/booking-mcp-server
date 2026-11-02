@@ -532,7 +532,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only only when breakfast must be included in the price ('śniadanie w cenie'); a plain 'ze śniadaniem' is not a filter - report free vs paid breakfast instead.\n- exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices are then for offers with breakfast included (hotels without such an offer are left out). Without it prices are for the cheapest offer.\n- exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Full details of one hotel: booking_get_hotel_details.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -735,6 +735,22 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       if (userText && params.exclude_hostels === false && !OTHER_ACCOMMODATION_RE.test(userText)) {
         params.exclude_hostels = true;
         console.error("=== DIAG exclude_hostels: model wyslal false, ale tekst usera nie wspomina hosteli/apartamentow - wymuszam true.");
+      }
+
+      // === SNIADANIE (02.11, zgloszenie: Green Garden w Raszynie) ===
+      // Wyszukiwanie zwraca jedna (najtansza) oferte hotelu - 365 zl bez sniadania,
+      // choc Booking.com ma tez 427 zl ze sniadaniem w cenie. "ze sniadaniem" i
+      // "sniadanie w cenie" = filtr: Booking.com zwraca wtedy ceny ofert ze sniadaniem
+      // (meal_plan: breakfast_included, test 02.11). Tekst usera rozstrzyga.
+      if (userText && !params.continue_previous) {
+        const t = userText.replace(/bed\s*(and|&)\s*breakfast|b\s*&\s*b/gi, " ");
+        if (/bez\s+[sś]niada|without\s+breakfast|no\s+breakfast/i.test(t)) {
+          if (params.breakfast_only) console.error("=== DIAG sniadanie: \"bez sniadania\" w tekscie usera - wylaczam filtr.");
+          params.breakfast_only = false;
+        } else if (/[sś]niada|breakfast/i.test(t) && !params.breakfast_only) {
+          params.breakfast_only = true;
+          console.error("=== DIAG sniadanie: tekst usera wspomina sniadanie - ceny ofert ze sniadaniem w cenie (meal_plan).");
+        }
       }
 
       // "dalej" bez miasta/wspolrzednych: model czesto wysyla SAMO
@@ -976,6 +992,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         // "sort" celowo NIE jest dodawane do request - patrz komentarz powyzej.
         if (pricePart) request.price = pricePart;
         if (ratingPart) request.rating = ratingPart;
+        // Booking.com zwraca wtedy oferty ze sniadaniem w cenie (ich ceny), a hotele bez takiej oferty pomija.
+        if (params.breakfast_only) request.meal_plan = "breakfast_included";
 
         const result = await client.searchAccommodations(request);
 
@@ -1386,6 +1404,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           output.breakfast_reminder = "For each hotel say whether breakfast is free (breakfast_included) or paid " +
             "(breakfast_price_paid). If both are set, breakfast IS included and the price is an optional upgrade - " +
             "never write 'w cenie, dodatkowo płatne'.";
+          if (formatted.some(function (h: any) { return !h.breakfast_included; })) {
+            output.breakfast_reminder += " Prices are for the cheapest offer. After the list add one sentence: " +
+              "'Ceny dotyczą najtańszej oferty – napisz „ze śniadaniem w cenie”, aby zobaczyć ceny ofert ze śniadaniem.'";
+          }
+        } else {
+          output.breakfast_reminder = "Prices are for offers with breakfast included - say so once above the list.";
         }
 
         if (usingCoordinates) {
