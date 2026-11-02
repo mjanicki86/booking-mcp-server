@@ -441,7 +441,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact. hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: give 'contact' when something has to be confirmed with the hotel.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact. hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: 'contact' is the trader (company operating the property) registered on Booking.com, not necessarily the hotel reception - always follow contact_note when you give it.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor parking or amenities of a whole list of hotels, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -663,6 +663,12 @@ export function registerHotelDetailsTool(
           checkout_from: checkoutFrom,
           checkout_until: checkoutTo,
           contact: contact,
+          contact_note: contact
+            ? "This phone/e-mail is the trader (company operating the property) as registered on Booking.com - it may " +
+              "lead to a management company or a sister hotel, not directly to this hotel's reception. When you give it, " +
+              "add one sentence saying so (e.g. 'Telefon i e-mail to dane firmy prowadzącej obiekt zgłoszone w Booking.com " +
+              "– mogą prowadzić do firmy zarządzającej, a nie bezpośrednio do recepcji hotelu.')."
+            : "Booking.com does not provide contact details for this property - say so and give the property page link.",
           description: description,
           important_information: importantInfo ?? null,
           facilities: facilities,
