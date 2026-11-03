@@ -11,6 +11,7 @@ import { registerHotelDetailsTool, loadFacilityNames } from "./tools/hotelDetail
 import { registerFindHotelTool, prewarmCity } from "./tools/findHotel.js";
 import { registerFindLandmarkTool } from "./tools/findLandmark.js";
 import { registerHotelAvailabilityTool } from "./tools/hotelAvailability.js";
+import { registerHotelsInfoTool } from "./tools/hotelsInfo.js";
 import { RequestContext, contextFromHeaders } from "./services/requestContext.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
@@ -104,6 +105,7 @@ function buildServer(ctx: RequestContext): McpServer {
   registerFindHotelTool(server, apiClient, ctx);
   registerFindLandmarkTool(server, apiClient, ctx);
   registerHotelAvailabilityTool(server, apiClient, ctx);
+  registerHotelsInfoTool(server, apiClient, ctx);
 
   return server;
 }

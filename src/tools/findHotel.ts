@@ -4,6 +4,7 @@ import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/ci
 import { normalizeText } from "../services/textNormalize.js";
 import { RequestContext } from "../services/requestContext.js";
 import { rememberChatHotel } from "../services/chatHotel.js";
+import { rememberExtraHotel } from "../services/shownHotels.js";
 import { z } from "zod";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -363,6 +364,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       const reply = (output: any) => {
         if (output?.status === "single_match" && output.hotel?.hotel_id) {
           rememberChatHotel(ctx?.chatId ?? "", output.hotel.hotel_id, output.hotel.name ?? null);
+          rememberExtraHotel(ctx?.chatId ?? "", output.hotel.hotel_id, output.hotel.name ?? null);
         }
         return replyBase(output);
       };
