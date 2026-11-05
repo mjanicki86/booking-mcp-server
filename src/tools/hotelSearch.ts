@@ -509,7 +509,39 @@ let landmarkClient: BookingApiClient | null = null;
 // Ta sama logika co booking_find_landmark: jedno dopasowanie albo kilka wpisow
 // tego samego miejsca (do LANDMARK_CLUSTER_DIAMETER_KM) -> punkt; kilka roznych
 // miejsc -> pytanie do usera; brak -> geokodowanie zewnetrzne.
-async function resolveLandmarkForSearch(name: string, city: string, country: string, scope: string): Promise<LandmarkResolution> {
+// === KILKA PROB PRZY NIEZNALEZIONYM MIEJSCU (05.11, Wroclaw: "blisko adresu ul. Weigla 5 -
+// to jest 4 Szpital Wojskowy" - agent podal tylko "ul. Weigla 5", landmarku nie ma, geokodowanie
+// nie trafilo, a druga nazwa z tej samej wiadomosci byla na liscie Booking.com) ===
+const STREET_PREFIX_RE = /^\s*(ul\.?|ulica|al\.?|aleja|aleje|pl\.?|plac|os\.?|osiedle)\s+/i;
+
+function alternativeNamesFromRequest(userText: string, given: string): string[] {
+  const out: string[] = [];
+  const g = normalizeText(given);
+  const re = /(?:to jest|tj\.|czyli|\s[-–]\s)\s*([^.,;\n]{3,60})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(userText)) !== null) {
+    const cand = m[1].trim().replace(/^(to jest|tj\.|czyli)\s+/i, "").replace(/\s+(nocleg|hotel|hotele|na)\b.*$/i, "").trim();
+    if (cand.length >= 3 && normalizeText(cand) !== g && !normalizeText(cand).includes(g)) out.push(cand);
+  }
+  return out.slice(0, 2);
+}
+
+async function resolveLandmarkForSearch(name: string, city: string, country: string, scope: string, userText?: string): Promise<LandmarkResolution> {
+  const first = await resolveLandmarkOnce(name, city, country, scope);
+  if (first.kind !== "none") return first;
+  const tries: string[] = [];
+  const stripped = name.replace(STREET_PREFIX_RE, "").trim();
+  if (stripped && stripped !== name) tries.push(stripped);
+  if (userText) tries.push(...alternativeNamesFromRequest(userText, name));
+  for (const t of tries) {
+    const r = await resolveLandmarkOnce(t, city, country, scope);
+    console.error("=== DIAG landmark_name: proba \"" + t + "\" -> " + r.kind + ".");
+    if (r.kind !== "none") return r;
+  }
+  return first;
+}
+
+async function resolveLandmarkOnce(name: string, city: string, country: string, scope: string): Promise<LandmarkResolution> {
   if (!landmarkClient) return { kind: "none" };
   const cityResult = await resolveCityId(landmarkClient, city, country, scope);
   if (!cityResult) return { kind: "city_not_found", message: await cityNotFoundMessage(landmarkClient, city, country) };
@@ -595,7 +627,8 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             isError: true,
           };
         }
-        const resolved = await resolveLandmarkForSearch(params.landmark_name.trim(), params.city, params.country, scope);
+        const resolved = await resolveLandmarkForSearch(params.landmark_name.trim(), params.city, params.country, scope,
+          typeof params.user_request === "string" ? params.user_request : undefined);
         if (resolved.kind === "point") {
           rememberChatLocation(scope, params.city, params.country);
           params.latitude = resolved.lat;
@@ -752,6 +785,18 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         } else if (/[sś]niada|breakfast/i.test(t) && !params.breakfast_only) {
           params.breakfast_only = true;
           console.error("=== DIAG sniadanie: tekst usera wspomina sniadanie - ceny ofert ze sniadaniem w cenie (meal_plan).");
+        }
+      }
+
+      // === PARKING Z TRESCI PROSBY (05.11, Wroclaw: w drugim wywolaniu agent zgubil
+      // required_facilities=parking, choc prosba "ze sniadaniem i parkingiem" przyszla w calosci) ===
+      if (userText && !params.continue_previous) {
+        const wantsParking = /parking|garaż|garaz|\bparkowan/i.test(userText) &&
+          !/bez\s+parking|parking\s+(nie\s+jest\s+)?(niepotrzebny|zbędny|zbedny)|without\s+parking/i.test(userText);
+        const has = (params.required_facilities ?? []).includes("parking");
+        if (wantsParking && !has) {
+          params.required_facilities = [...(params.required_facilities ?? []), "parking"];
+          console.error("=== DIAG parking: tekst usera wspomina parking, a agent nie podal filtra - dokladam required_facilities=parking.");
         }
       }
 

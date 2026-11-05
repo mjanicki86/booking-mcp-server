@@ -254,7 +254,7 @@ function buildParkingSummary(fd: any, currency: string | null, facilityTexts: st
       if (typeof p.price === "number" && p.price > 0) s += " (" + p.price + (currency ? " " + currency : "") + ")";
       if (p.reservation && PARKING_RESERVATION_NAMES[p.reservation]) s += ", " + PARKING_RESERVATION_NAMES[p.reservation];
       return s + ".";
-    }).join(" ") + extras;
+    }).filter((s: string, i: number, arr: string[]) => arr.indexOf(s) === i).join(" ") + extras;
   }
   const parkingFacilities = facilityTexts.filter((t) => /parking|garaz|garage/i.test(t));
   if (parkingFacilities.length > 0) {
@@ -311,7 +311,13 @@ function parseParkingDetails(fd: any, currency: string | null): any[] | null {
   if (!fd || !Array.isArray(fd.parking_facilities) || fd.parking_facilities.length === 0) {
     return null;
   }
-  return fd.parking_facilities.map(function (p: any) {
+  const seen = new Set<string>();
+  return fd.parking_facilities.filter(function (p: any) {
+    const k = JSON.stringify(p);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).map(function (p: any) {
     const entry: any = {};
     if (p.type != null) entry.type = p.type;
     if (p.price != null) entry.price = p.price;

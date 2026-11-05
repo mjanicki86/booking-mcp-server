@@ -24,7 +24,10 @@ export function contextFromHeaders(headers: Record<string, unknown>): RequestCon
       "w narzedziu MCP w Copilot Studio ustaw wartosc jako ZMIENNA System.Conversation.Id. Pracuje bez pamieci czatu.");
     return { turnId: null, chatId: null };
   }
-  const cut = turnId.lastIndexOf("_");
-  const chatId = cut > 0 ? turnId.slice(0, cut) : turnId;
+  // (05.11) Od podlaczenia narzedzia bezposrednio w hotelowym przychodzi samo id czatu
+  // (bez "_<guid tury>", ktory dodawal polaczony agent). Id czatu Teams sam zawiera "_",
+  // wiec odcinamy koncowke tylko wtedy, gdy jest GUID-em.
+  const m = /^(.*)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.exec(turnId);
+  const chatId = m && m[1].length > 0 ? m[1] : turnId;
   return { turnId, chatId };
 }

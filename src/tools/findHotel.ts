@@ -507,6 +507,26 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
             (altErr instanceof Error ? altErr.message : String(altErr)));
         }
 
+        // (05.11, Poleczki Residence) Podany adres, a zaden kandydat nie lezy pod nim -
+        // kandydaci tylko z czesci nazwy ("Residence") sa mylacy. Obiekt najpewniej nie jest
+        // udostepniany przez API (test: /details dla id 7443140 -> data:[]).
+        const partialAtAddress = hint ? partial.filter((e) => addressMatches(e.address, hint)) : partial;
+        if (hint && partial.length > 0 && partialAtAddress.length === 0) {
+          console.error("=== DIAG booking_find_hotel: " + partial.length + " kandydatow z czesci nazwy, zaden pod adresem \"" +
+            hint + "\" - zwracam not_in_api.");
+          const output: any = {
+            status: "not_found",
+            message: "No property named \"" + searchName + "\" at \"" + hint + "\" in the Booking.com API property list for " +
+              params.city + " (" + inventory.length + " properties checked, including apartments). " + "Not every property visible on the Booking.com website is available through the Booking.com API used by this assistant (often private apartments) - e.g. Poleczki Residence Apartments (id 7443140) is on the website but not in the API. " +
+              "Suggested reply: the property was not found in the data Booking.com shares with the assistant; it may " +
+              "be visible on the Booking.com website but unavailable here - worth checking it directly on Booking.com. " +
+              "No list of similarly named properties.",
+            data_source: "Booking.com API",
+          };
+          if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
+          return reply(output);
+        }
+
         if (partial.length > 0) {
           const output: any = {
             status: "partial_match",
@@ -524,8 +544,9 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         const output: any = {
           status: "no_match",
           message: "No property matching \"" + searchName + "\" in the Booking.com API property list for " +
-            params.city + " (" + inventory.length + " properties checked). This does not prove the " +
-            "property does not exist - it may be listed under a neighbouring town.",
+            params.city + " (" + inventory.length + " properties checked, including apartments). This does not prove " +
+            "the property does not exist - it may be listed under a neighbouring town, or be visible on the Booking.com " +
+            "website but not available through the API used by this assistant (often private apartments).",
           data_source: "Booking.com API",
         };
         if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
