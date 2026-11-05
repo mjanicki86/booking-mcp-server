@@ -4,6 +4,7 @@ import { BookingApiClient } from "../services/bookingClient.js";
 import { RequestContext } from "../services/requestContext.js";
 import { rememberChatHotel, recentChatHotel } from "../services/chatHotel.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM } from "../constants.js";
+import { fixStayDates } from "../services/dates.js";
 
 // === DOSTEPNOSC JEDNEGO HOTELU (02.11, zgloszenie Emilii: "czy w grudniu hotel
 // Sumratin w Dubrowniku przyjmuje gosci?") ===
@@ -157,8 +158,13 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
       let dates: { checkin: string; checkout: string }[];
       let mode: string;
       if (params.checkin) {
-        const co = params.checkout && params.checkout > params.checkin ? params.checkout : addDays(params.checkin, 1);
-        dates = [{ checkin: params.checkin, checkout: co }];
+        const fixed = fixStayDates(params.checkin, params.checkout, undefined);
+        if (fixed.pastError) {
+          return { content: [{ type: "text", text: fixed.pastError }], isError: true };
+        }
+        const ci = fixed.checkin!;
+        const co = fixed.checkout && fixed.checkout > ci ? fixed.checkout : addDays(ci, 1);
+        dates = [{ checkin: ci, checkout: co }];
         mode = "dates";
       } else if (params.month) {
         dates = datesInMonth(params.month, params.year);
