@@ -38,6 +38,89 @@ function swapDayMonth(s: string): string | null {
   return isValidIso(swapped) ? swapped : null;
 }
 
+// === DATY Z TRESCI PROSBY (06.11, zgloszenie Julii: "apartament kolo Magazynowej 7 ... termin 15-16.12"
+// - agent nie przekazal dat, serwer wzial 16-18.12 z wczesniejszego pytania, a agent napisal 15-16.12) ===
+// Obslugiwane: "15-16.12", "15–16.12.2026", "15.12-16.12", "10-11/11", "30.12-2.01", "15-16 grudnia",
+// "od 15.12 do 16.12", pojedyncza data po "na/od/dnia/w dniu/on" ("na 10.12" -> 1 noc).
+const MONTHS_PL: Record<string, number> = {
+  stycz: 1, lut: 2, marc: 3, marz: 3, kwiet: 4, kwiec: 4, maj: 5, czerw: 6, lip: 7, sierp: 8,
+  wrzes: 9, wrzesn: 9, pazdz: 10, list: 11, grud: 12,
+};
+function monthFromWord(w: string): number | null {
+  const n = w.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ł/g, "l");
+  for (const [k, v] of Object.entries(MONTHS_PL)) if (n.startsWith(k)) return v;
+  return null;
+}
+
+function pad(n: number): string { return (n < 10 ? "0" : "") + n; }
+
+// Dzien/miesiac(/rok) -> RRRR-MM-DD; bez roku: najblizszy przyszly (dzis lub pozniej).
+function toIso(day: number, month: number, year: number | null, today: string): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  let y = year != null ? (year < 100 ? 2000 + year : year) : Number(today.slice(0, 4));
+  let s = y + "-" + pad(month) + "-" + pad(day);
+  if (!isValidIso(s)) return null;
+  if (year == null && s < today) {
+    y += 1;
+    s = y + "-" + pad(month) + "-" + pad(day);
+    if (!isValidIso(s)) return null;
+  }
+  return s;
+}
+
+export function parseDatesFromText(text: string, today: string = warsawToday()): { checkin: string; checkout?: string } | null {
+  if (!text) return null;
+  const t = text.replace(/[–—]/g, "-");
+  const yr = (s: string | undefined) => (s ? Number(s) : null);
+  // 1) zakres z liczbowym miesiacem: 15-16.12 | 15.12-16.12 | 30.12-2.01 | 10-11/11 | 15/12-16/12/2026
+  let m = /(?:^|[^\d.,\/])(\d{1,2})(?:[.\/](\d{1,2}))?(?:[.\/](\d{2,4}))?\.?\s*(?:-|do)\s*(\d{1,2})[.\/](\d{1,2})(?:[.\/](\d{2,4}))?(?!\d|[.,]\d)/.exec(t);
+  if (m) {
+    const endYear = yr(m[6]);
+    const endMonth = Number(m[5]);
+    const startMonth = m[2] ? Number(m[2]) : endMonth;
+    const startYear = m[3] ? yr(m[3]) : endYear;
+    let ci = toIso(Number(m[1]), startMonth, startYear, today);
+    let co = toIso(Number(m[4]), endMonth, endYear, today);
+    if (ci && co && co <= ci && endYear == null) {
+      // przelom roku: 30.12-2.01
+      co = toIso(Number(m[4]), endMonth, Number(ci.slice(0, 4)) + 1, today);
+    }
+    if (ci && co && co > ci) return { checkin: ci, checkout: co };
+  }
+  // 2a) "3 stycznia - 5 stycznia", "od 30 grudnia do 2 stycznia"
+  m = /(?:^|\D)(\d{1,2})\s+([a-ząćęłńóśźż]{3,})\s*(?:-|do)\s*(\d{1,2})\s+([a-ząćęłńóśźż]{3,})(?:\s+(\d{4}))?/i.exec(t);
+  if (m) {
+    const m1 = monthFromWord(m[2]);
+    const m2 = monthFromWord(m[4]);
+    if (m1 && m2) {
+      const ci = toIso(Number(m[1]), m1, yr(m[5]), today);
+      let co = toIso(Number(m[3]), m2, yr(m[5]), today);
+      if (ci && co && co <= ci && !m[5]) co = toIso(Number(m[3]), m2, Number(ci.slice(0, 4)) + 1, today);
+      if (ci && co && co > ci) return { checkin: ci, checkout: co };
+    }
+  }
+  // 2) zakres ze slownym miesiacem: 15-16 grudnia (2026)
+  m = /(?:^|\D)(\d{1,2})\s*(?:-|do)\s*(\d{1,2})\s+([a-ząćęłńóśźż]{3,})(?:\s+(\d{4}))?/i.exec(t);
+  if (m) {
+    const mo = monthFromWord(m[3]);
+    if (mo) {
+      const ci = toIso(Number(m[1]), mo, yr(m[4]), today);
+      const co = toIso(Number(m[2]), mo, yr(m[4]), today);
+      if (ci && co && co > ci) return { checkin: ci, checkout: co };
+    }
+  }
+  // 3) pojedyncza data po slowie wskazujacym przyjazd: "na 10.12", "od 10 grudnia", "dnia 10/12"
+  m = /(?:^|\s)(?:na|od|dnia|w\s+dniu|on|from)\s+(\d{1,2})(?:[.\/](\d{1,2})(?:[.\/](\d{2,4}))?|\s+([a-ząćęłńóśźż]{3,}))(?!\d|[.,]\d)/i.exec(t);
+  if (m) {
+    const mo = m[2] ? Number(m[2]) : m[4] ? monthFromWord(m[4]) : null;
+    if (mo) {
+      const ci = toIso(Number(m[1]), mo, yr(m[3]), today);
+      if (ci) return { checkin: ci };
+    }
+  }
+  return null;
+}
+
 export interface FixedDates {
   checkin?: string;
   checkout?: string;
@@ -52,6 +135,18 @@ export function fixStayDates(checkinIn: string | undefined, checkoutIn: string |
   let oneNightAdded = false;
   const today = warsawToday();
   const req = typeof userRequest === "string" ? userRequest : "";
+
+  // 0) Agent nie podal dat, a sa w tresci prosby -> bierzemy je z tekstu
+  //    (przed datami z wczesniejszego pytania w czacie).
+  if (!checkin && !checkout && req) {
+    const fromText = parseDatesFromText(req, today);
+    if (fromText) {
+      checkin = fromText.checkin;
+      checkout = fromText.checkout;
+      console.error(logPrefix + ": agent nie podal dat - biore z tresci prosby: " + checkin +
+        (checkout ? " - " + checkout : "") + ".");
+    }
+  }
 
   // 1) Daty wzgledne - tylko gdy agent nie podal przyszlej daty zameldowania
   //    ("dzis jest 5/11, chce hotel na 12.11" -> zostaje 12.11 od agenta).

@@ -28,9 +28,17 @@ import { LANDMARK_CLUSTER_DIAMETER_KM, clusterDiameterKm, getCoords, landmarkLab
 //   WIDENED_RADIUS_KM i zwraca radius_note, ktore agent podaje userowi we wstepie.
 const DEFAULT_NEAR_RADIUS_KM = 1;
 const WIDENED_RADIUS_KM = 3;
+// === MALO WYNIKOW (06.11, zgloszenie Julii - Ossendrecht: 1 hotel w promieniu 1 km, Hotel Dekkers
+// dalej) === Poszerzamy nie tylko przy 0, ale gdy jest mniej niz MIN_RESULTS_BEFORE_WIDEN:
+// 1 km -> 3 km -> 10 km. Szukanie po samym miescie (male miejscowosci) -> 10 km od centrum.
+const MIN_RESULTS_BEFORE_WIDEN = 3;
+const FAR_RADIUS_KM = 10;
+// Szukanie po miescie poszerzamy tylko dla malych miejscowosci (malo obiektow w miescie).
+const SMALL_PLACE_MAX_FOUND = 30;
 
 type WidenContext = {
-  fromKm: number;
+  fromKm: number;            // 0 = szukanie po samym miescie
+  fromCount: number;         // ile obiektow bylo przed poszerzeniem
   continuationExpired: boolean;
 };
 
@@ -290,8 +298,17 @@ const recentSearchPoints: { scope: string; lat: number; lon: number; at: number 
 const USER_DISTANCE_RE = /(\d+(?:[.,]\d+)?)\s*(km\b|kilometr\w*|m\b|metr\w*)/i;
 const OTHER_ACCOMMODATION_RE = new RegExp(
   "hostel|apartament|apartment|pensjonat|kwater|b\\s*&\\s*b|bed and breakfast|willa|villa|" +
-  "dowoln\\w* (typ|rodzaj|obiekt|nocleg)|any (type|kind|accommodation)|wszystkie (typy|rodzaje|obiekty)",
+  "dowoln\\w* (typ|rodzaj|obiekt|nocleg)|any (type|kind|accommodation)|wszystkie (typy|rodzaje|obiekty)|" +
+  // 06.11 (Ossendrecht): "inne obiekty noclegowe" - serwer wymuszal "tylko hotele"
+  "obiekt\\w*\\s+nocleg|inn\\w*\\s+obiekt|nocleg(i|ów|ow|owe|owych)\\b|other (properties|accommodation)|any accommodation",
   "i");
+
+// === TYLKO APARTAMENTY (06.11, zgloszenie Julii: "apartament kolo Magazynowej 7" - na liscie byly
+// Holiday Inn Express i Centrum Barnabitow) === Prosba o apartament(y) bez wzmianki o hotelach
+// i innych typach -> tylko typ 201 (Apartments wg Booking.com).
+const APARTMENT_RE = /apartament|apartment|\bstudio\b/i;
+const NOT_ONLY_APARTMENTS_RE = /hotel|hostel|pensjonat|obiekt|nocleg|b\s*&\s*b|willa|villa|lub|albo|\bor\b/i;
+const APARTMENT_TYPES = new Set([201]);
 
 function parseUserDistanceKm(text: string): number | null {
   const m = USER_DISTANCE_RE.exec(text);
@@ -772,6 +789,13 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         params.exclude_hostels = true;
         console.error("=== DIAG exclude_hostels: model wyslal false, ale tekst usera nie wspomina hosteli/apartamentow - wymuszam true.");
       }
+      const apartmentsOnly = !!userText && APARTMENT_RE.test(userText) && !NOT_ONLY_APARTMENTS_RE.test(userText.replace(APARTMENT_RE, " "));
+      if (apartmentsOnly) {
+        if (params.exclude_hostels !== false && !widen) {
+          console.error("=== DIAG apartamenty: prosba tylko o apartamenty - wylaczam filtr 'tylko hotele'.");
+        }
+        params.exclude_hostels = false;
+      }
 
       // === SNIADANIE (02.11, zgloszenie: Green Garden w Raszynie) ===
       // Wyszukiwanie zwraca jedna (najtansza) oferte hotelu - 365 zl bez sniadania,
@@ -907,6 +931,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         chain: params.chain ? normalizeText(params.chain) : undefined,
         breakfast_only: params.breakfast_only, free_cancellation_only: params.free_cancellation_only,
         sort_by: params.sort_by,
+        apartments_only: apartmentsOnly || undefined,
       };
       const searchKey = makeSearchKey(keyParams);
 
@@ -929,6 +954,13 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             return serveNextBatch(widenedKey, widenedEntry, "po parametrach, lista poszerzona do " + WIDENED_RADIUS_KM + " km");
           }
           candidates.push({ params: widenedParams, how: "luzne dopasowanie, lista poszerzona do " + WIDENED_RADIUS_KM + " km" });
+          const farParams = { ...keyParams, radius_km: FAR_RADIUS_KM };
+          const farKey = makeSearchKey(farParams);
+          const farEntry = getResultSet(farKey);
+          if (farEntry) {
+            return serveNextBatch(farKey, farEntry, "po parametrach, lista poszerzona do " + FAR_RADIUS_KM + " km");
+          }
+          candidates.push({ params: farParams, how: "luzne dopasowanie, lista poszerzona do " + FAR_RADIUS_KM + " km" });
         }
         for (const c of candidates) {
           const looseKey = findLooseMatch(c.params);
@@ -1157,6 +1189,19 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           stepBreakdown.push({ step: "after_exclude_hostels_apartments_villas", count: hotels.length });
         }
 
+        if (apartmentsOnly) {
+          const beforeApt = hotels.length;
+          const rejected: Record<string, number> = {};
+          hotels = hotels.filter(function (h) {
+            const ok = h.accommodation_type_id != null && APARTMENT_TYPES.has(h.accommodation_type_id);
+            if (!ok) rejected[String(h.accommodation_type_id)] = (rejected[String(h.accommodation_type_id)] ?? 0) + 1;
+            return ok;
+          });
+          console.error("=== DIAG apartamenty: " + beforeApt + " -> " + hotels.length + " obiektow (typ 201; odrzucone typy: " +
+            JSON.stringify(rejected) + ").");
+          stepBreakdown.push({ step: "after_apartments_only", count: hotels.length });
+        }
+
         // === SIEC / MARKA (02.11, "hotele Marriott kolo NEC" - agent dorzucil Novotel) ===
         if (params.chain) {
           const chainSet = await brandIdsForChain(params.chain);
@@ -1291,6 +1336,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         // bez zapytan do Booking.com.
         const allFormatted = hotels.map(function (h) {
           const fh = formatHotel(h, currency);
+          // 06.11 (Julia): "Sniadanie w cenie (doplata: 58 PLN)" - cena oferty juz ze sniadaniem,
+          // a breakfast_price_paid to cena sniadania dokupowanego do oferty bez sniadania.
+          if (fh.breakfast_included) fh.breakfast_price_paid = null;
           const d = distanceById.get(h.hotel_id);
           fh.distance_km = d != null ? Math.round(d * 10) / 10 : null;
           return fh;
@@ -1379,14 +1427,39 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           "Parameters of THIS search, for this reply only (not visible to you in later messages). In a follow-up, " +
           "search again with what the user asked for and change only what they changed; say which filter changed.";
 
-        if (formatted.length === 0 && widenEligible) {
-          console.error("=== DIAG promien: 0 hoteli w promieniu domyslnym " + params.radius_km + " km (" +
+        const foundInLocation = stepBreakdown.length > 0 ? stepBreakdown[0].count : 0;
+        if (limitedAll.length < MIN_RESULTS_BEFORE_WIDEN && widenEligible) {
+          console.error("=== DIAG promien: " + limitedAll.length + " obiektow w promieniu domyslnym " + params.radius_km + " km (" +
             stepBreakdown.map((s) => s.step + ": " + s.count).join(" -> ") + ") - poszerzam automatycznie do " +
             WIDENED_RADIUS_KM + " km.");
           return searchHotels(
             { ...params, radius_km: WIDENED_RADIUS_KM, continue_previous: false },
-            { fromKm: Number(params.radius_km), continuationExpired: continuationExpired },
+            { fromKm: Number(params.radius_km), fromCount: limitedAll.length, continuationExpired: continuationExpired },
           );
+        }
+        if (limitedAll.length < MIN_RESULTS_BEFORE_WIDEN && widen && widen.fromKm > 0 && usingCoordinates &&
+            Number(params.radius_km) === WIDENED_RADIUS_KM) {
+          console.error("=== DIAG promien: " + limitedAll.length + " obiektow takze w " + WIDENED_RADIUS_KM +
+            " km - poszerzam automatycznie do " + FAR_RADIUS_KM + " km.");
+          return searchHotels(
+            { ...params, radius_km: FAR_RADIUS_KM, continue_previous: false },
+            { fromKm: widen.fromKm, fromCount: widen.fromCount, continuationExpired: continuationExpired },
+          );
+        }
+        if (limitedAll.length < MIN_RESULTS_BEFORE_WIDEN && !widen && !usingCoordinates && params.city && params.country &&
+            foundInLocation < SMALL_PLACE_MAX_FOUND && params.radius_km == null) {
+          const center = await resolveLandmarkForSearch(params.city, params.city, params.country, scope, undefined);
+          if (center.kind === "point") {
+            console.error("=== DIAG promien: w miescie " + params.city + " tylko " + limitedAll.length + " obiektow (" +
+              foundInLocation + " w miescie przed filtrami) - szukam " + FAR_RADIUS_KM + " km od centrum (" +
+              center.lat + ", " + center.lon + ").");
+            return searchHotels(
+              { ...params, latitude: center.lat, longitude: center.lon, radius_km: FAR_RADIUS_KM,
+                landmark_name: undefined, continue_previous: params.continue_previous },
+              { fromKm: 0, fromCount: limitedAll.length, continuationExpired: continuationExpired },
+            );
+          }
+          console.error("=== DIAG promien: malo obiektow w " + params.city + ", ale nie ustalono centrum (" + center.kind + ") - bez poszerzania.");
         }
 
         if (formatted.length === 0) {
@@ -1409,8 +1482,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
               type: "text",
               text: "No hotels found for " + locationLabel + " between " + checkin + " and " + checkout +
                 " matching ALL filters together." +
-                (widen ? " The server first searched the default " + widen.fromKm + " km around the point (0 hotels) " +
-                  "and then automatically widened to " + params.radius_km + " km - also 0 hotels (both radii checked)." : "") +
+                (widen ? " The server first searched " + (widen.fromKm === 0 ? "the town itself" : "the default " +
+                  widen.fromKm + " km around the point") + " (" + widen.fromCount + " found) and then automatically " +
+                  "widened to " + params.radius_km + " km - 0 matching (all radii checked)." : "") +
                 " Step-by-step breakdown of how many hotels survived each " +
                 "filter (found_in_location -> ... -> final): " + breakdownText + "." + specificHint +
                 " Suggested reply: no hotels for these criteria, the filter that reduced the list to zero (from the " +
@@ -1447,6 +1521,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (params.min_review_score != null) appliedFilters.push("review score >= " + params.min_review_score);
         if (params.min_stars) appliedFilters.push((params.exact_stars ? "exactly " : "") + params.min_stars + (params.exact_stars ? " stars" : "+ stars"));
         if (params.exclude_hostels) appliedFilters.push("hostels/apartments/serviced apartments/villas/B&Bs excluded");
+        if (apartmentsOnly) appliedFilters.push("apartments only (Booking.com property type: apartment) - hotels excluded");
         if (params.required_facilities && params.required_facilities.length > 0) appliedFilters.push("must have: " + params.required_facilities.join(", "));
         if (params.breakfast_only) appliedFilters.push("breakfast included FREE only (paid-breakfast hotels excluded)");
         if (params.free_cancellation_only) appliedFilters.push("free cancellation only");
@@ -1482,15 +1557,15 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           "'position' (1-" + formatted.length + "), in this order (already sorted).";
 
         if (!params.breakfast_only) {
-          output.breakfast_reminder = "For each hotel say whether breakfast is free (breakfast_included) or paid " +
-            "(breakfast_price_paid). If both are set, breakfast is included and the price is an optional upgrade " +
-            "(wording: 'w cenie, opcjonalnie lepsze śniadanie za …').";
+          output.breakfast_reminder = "For each hotel say whether breakfast is included in the price " +
+            "(breakfast_included) or paid extra (breakfast_price_paid, per person per day).";
           if (formatted.some(function (h: any) { return !h.breakfast_included; })) {
             output.breakfast_reminder += " Prices are for the cheapest offer. After the list add one sentence: " +
               "'Ceny dotyczą najtańszej oferty – napisz „ze śniadaniem w cenie”, aby zobaczyć ceny ofert ze śniadaniem.'";
           }
         } else {
-          output.breakfast_reminder = "Prices are for offers with breakfast included - say so once above the list.";
+          output.breakfast_reminder = "Prices are for offers with breakfast included - say so once above the list; " +
+            "do not mention any extra charge for breakfast.";
         }
 
         if (usingCoordinates) {
@@ -1499,8 +1574,14 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
             output.radius_note = "Szukam w promieniu " + params.radius_km + " km od {miejsce} (domyślna odległość " +
               "dla zapytań typu „koło” / „w pobliżu”). Jeśli chcesz inny promień, napisz np. „w promieniu 2 km”.";
           } else if (radiusSource === "widened" && widen) {
-            output.radius_note = "W promieniu " + widen.fromKm + " km od {miejsce} nie ma żadnego hotelu spełniającego " +
-              "wszystkie kryteria, więc automatycznie poszerzyłem wyszukiwanie do " + params.radius_km + " km.";
+            const before = widen.fromCount === 0 ? "nie ma żadnego obiektu spełniającego wszystkie kryteria"
+              : "jest tylko " + widen.fromCount + " " + (widen.fromCount === 1 ? "obiekt spełniający" : "obiekty spełniające") +
+                " wszystkie kryteria";
+            output.radius_note = widen.fromKm === 0
+              ? "W samej miejscowości " + params.city + " " + before + ", więc automatycznie poszerzyłem wyszukiwanie do " +
+                params.radius_km + " km od centrum (także sąsiednie miejscowości)."
+              : "W promieniu " + widen.fromKm + " km od {miejsce} " + before + ", więc automatycznie poszerzyłem " +
+                "wyszukiwanie do " + params.radius_km + " km.";
           }
           if (output.radius_note) {
             output.radius_note_instruction = "Reply starts with radius_note, {miejsce} replaced by the place name in " +
