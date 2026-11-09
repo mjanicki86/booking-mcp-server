@@ -4,9 +4,13 @@
 //   node dist/probe.js hotel 87169 2026-11-11 2026-11-13 [dorosli] [wiek_dzieci np. 1,5]
 //   node dist/probe.js facilities kid
 //   node dist/probe.js text "hotele w Trojmiescie dla 2 doroslych z poltorarocznym dzieckiem 11-13.11"
+//   node dist/probe.js places-test            (pomiar Google Places + strony hoteli, 22 hotele z listy 02.11)
+//   node dist/probe.js places "Hotel X" "ulica, miasto"
 // Klucz API nie jest nigdzie wypisywany.
 import { config } from "./config.js";
 import { parseDatesFromText, fixStayDates } from "./services/dates.js";
+import { findPlace, googlePlacesEnabled } from "./services/googlePlaces.js";
+import { parkingFromWebsite } from "./services/hotelWebsite.js";
 import { parseGuestsFromText, requestedAccommodationTypes, breakfastIntent, wantsParking, parseUserDistanceKm } from "./services/textParsing.js";
 
 async function post(path: string, body: unknown): Promise<any> {
@@ -75,14 +79,76 @@ function text(args: string[]): void {
   console.log("Sniadanie: " + breakfastIntent(t) + ", parking: " + wantsParking(t) + ", promien km: " + parseUserDistanceKm(t));
 }
 
+// Lista testowa od Michala (02.11, dokument projektu "parking-ze-stron-hoteli-lista-testowa").
+const TEST_HOTELS: [string, string][] = [
+  ["Park-Hotel Hagenbeck", "Hagenbeckstraße 150, 22527 Hamburg"],
+  ["Hampton by Hilton Krakow", "Dąbska 5, 31-572 Kraków"],
+  ["Varsovia Apartamenty Kasprzaka", "Marcina Kasprzaka 31, 01-234 Warszawa"],
+  ["Four Points by Sheraton Wroclaw", "Gajowicka 130, 53-322 Wrocław"],
+  ["Kyriad Stargard", "Spichrzowa 2, 73-110 Stargard"],
+  ["Scandic Hamburg Emporio", "Dammtorwall 19, 20355 Hamburg"],
+  ["Hotel Duo", "Teplická 492, 190 00 Praha 9"],
+  ["Airporthotel Berlin Adlershof", "Rudower Chaussee 14, 12489 Berlin"],
+  ["Hotel Moderno", "Kolejowa 29, 60-718 Poznań"],
+  ["ibis Styles Warszawa West", "Poznańska 33, 05-850 Mory"],
+  ["Park Hotel Diament Katowice", "Wita Stwosza 37, 40-042 Katowice"],
+  ["Tallink Hotel Riga", "Elizabetes iela 24, Rīga, LV-1050"],
+  ["Best Western Hotel Halle-Merseburg", "Christianenstraße 25, 06217 Merseburg"],
+  ["Clarion Congress Hotel Prague", "Freyova 945/33, 190 00 Praha"],
+  ["PURO Łódź Centrum", "Ogrodowa 16, 91-065 Łódź"],
+  ["Golden Tulip Gdańsk Residence", "Piastowska 160, 80-358 Gdańsk"],
+  ["Hotel The Loom", "Ogrodowa 21, 91-065 Łódź"],
+  ["NH Collection Olomouc Congress", "Legionářská 21, 779 00 Olomouc"],
+  ["Hotel Grand Vígľaš", "Vígľaš 602, 962 02 Vígľaš"],
+  ["Hotel Partner", "Marywilska 16, 03-228 Warszawa"],
+  ["Hotel Sante", "Jagiellońska 55A, 03-301 Warszawa"],
+  ["Grein Hotel", "Al. Tadeusza Rejtana 1, 35-326 Rzeszów"],
+];
+
+async function placesOne(name: string, address: string, verbose: boolean): Promise<{ place: boolean; web: boolean; phone: boolean; fetched: boolean; parking: boolean }> {
+  const p = await findPlace(name, address);
+  const r = { place: !!p, web: !!p?.website, phone: !!p?.phone, fetched: false, parking: false };
+  console.log("\n### " + name + " (" + address + ")");
+  if (!p) { console.log("  Google: NIE ZNALEZIONO"); return r; }
+  console.log("  Google: " + p.name + " | " + (p.address ?? "-") + (p.is_lodging ? "" : " | UWAGA: nie oznaczony jako hotel"));
+  console.log("  Telefon: " + (p.phone ?? "brak") + " | WWW: " + (p.website ?? "brak"));
+  if (!p.website) return r;
+  const w = await parkingFromWebsite(p.website);
+  r.fetched = w.fetched;
+  r.parking = w.parking_snippets.length > 0;
+  console.log("  Strona: " + (w.fetched ? "pobrana, " + w.text_chars + " znakow" + (w.js_only ? " (MALO TEKSTU - pewnie JavaScript)" : "")
+    : "NIE POBRANO (" + (w.error ?? "?") + ")") + " | podstrony: " + Math.max(0, w.pages_checked.length - 1));
+  console.log("  Parking na stronie: " + (r.parking ? "TAK" : "nie znaleziono") +
+    (r.parking ? " | cena: " + (w.found.price ? "tak" : "nie") + ", wysokosc: " + (w.found.height ? "tak" : "nie") +
+      ", EV: " + (w.found.ev ? "tak" : "nie") + ", LPG: " + (w.found.lpg ? "tak" : "nie") + ", bus: " + (w.found.bus ? "tak" : "nie") : ""));
+  const show = verbose ? w.parking_snippets : w.parking_snippets.slice(0, 3);
+  for (const s of show) console.log("    - " + s.replace(/\s+/g, " ").slice(0, 220));
+  return r;
+}
+
+async function placesTest(): Promise<void> {
+  if (!googlePlacesEnabled()) { console.log("Brak GOOGLE_PLACES_API_KEY w zmiennych kontenera - patrz instrukcja w Azure."); return; }
+  const sum = { place: 0, web: 0, phone: 0, fetched: 0, parking: 0 };
+  for (const [name, address] of TEST_HOTELS) {
+    const r = await placesOne(name, address, false);
+    for (const k of Object.keys(sum) as (keyof typeof sum)[]) if (r[k]) sum[k]++;
+  }
+  const n = TEST_HOTELS.length;
+  console.log("\n=== PODSUMOWANIE (" + n + " hoteli): znaleziony w Google " + sum.place + ", ma strone WWW " + sum.web +
+    ", ma telefon " + sum.phone + ", strona pobrana " + sum.fetched + ", parking na stronie " + sum.parking + ".");
+}
+
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (cmd === "hotel") await hotel(args);
   else if (cmd === "facilities") await facilities(args);
   else if (cmd === "text") text(args);
+  else if (cmd === "places-test") await placesTest();
+  else if (cmd === "places") { if (args[0]) await placesOne(args[0], args[1] ?? "", true); }
   else {
     console.log("Komendy:\n  node dist/probe.js hotel <hotel_id> <checkin> <checkout> [dorosli] [wiek,wiek]\n" +
-      "  node dist/probe.js facilities <slowo>\n  node dist/probe.js text \"<tresc prosby>\"");
+      "  node dist/probe.js facilities <slowo>\n  node dist/probe.js text \"<tresc prosby>\"\n" +
+      "  node dist/probe.js places-test\n  node dist/probe.js places \"<nazwa hotelu>\" \"<adres>\"");
   }
 }
 

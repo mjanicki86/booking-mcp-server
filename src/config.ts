@@ -23,4 +23,8 @@ export const config = {
   // Hasła - MUSZĄ być ustawione w Azure, inaczej serwer się nie uruchomi.
   bookingApiKey: requireEnv("BOOKING_API_KEY"),
   bookingAffiliateId: requireEnv("BOOKING_AFFILIATE_ID"),
+
+  // Google Places (09.11) - OPCJONALNY: sekret Azure "google-places-key" -> GOOGLE_PLACES_API_KEY.
+  // Bez niego serwer dziala jak wczesniej (funkcje Google sa po prostu niedostepne).
+  googlePlacesApiKey: process.env.GOOGLE_PLACES_API_KEY ?? "",
 };
