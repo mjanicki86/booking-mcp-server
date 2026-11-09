@@ -11,7 +11,8 @@ import {
 import { fetchParkingSummaries } from "./hotelDetails.js";
 import { RequestContext } from "../services/requestContext.js";
 import { normalizeText } from "../services/textNormalize.js";
-import { fixStayDates } from "../services/dates.js";
+import { ALLOWED_HOTEL_ACCOMMODATION_TYPES, NEAR_PLACE_RE, OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, STREET_PREFIX_RE, alternativeNamesFromRequest, breakfastIntent, wantsParking, normalizeFacilities } from "../services/textParsing.js";
+import { resolveStay, childAgesQuestion } from "../services/stayContext.js";
 import { brandIdsForChain, brandLabel } from "../services/chains.js";
 import { rememberSearchBatch } from "../services/shownHotels.js";
 import { searchLandmarks, geocodeAddress } from "../services/landmarkResolver.js";
@@ -97,7 +98,6 @@ type SearchToolInput = Omit<HotelSearchInput, "radius_km"> & {
 // 228 Chalets, 235 Student accommodations. Obiekt bez typu w danych - przepuszczamy.
 // 31.10 (decyzja uzytkownika): dopuszczone tez 205 motel, 206 resort, 218 zajazd -
 // formaty hotelowe (np. hotel z SPA nad morzem, podmiejski zajazd z pokojami).
-const ALLOWED_HOTEL_ACCOMMODATION_TYPES = new Set([204, 205, 206, 218, 231]);
 
 const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   pool: [103, 104],
@@ -123,34 +123,9 @@ function isInHolidayBlackout(d: Date): boolean {
   return false;
 }
 
-// === DATY Z WCZESNIEJSZEGO PYTANIA W TYM CZACIE (2026-10-29) ===
-// Konsultant podal daty w pierwszym pytaniu ("5-6.11"), a w kolejnym ("hotele
-// kolo dworca") juz nie - serwer bral wtedy przykladowe daty za 3 miesiace.
-// Decyzja uzytkownika: bez nowych dat bierzemy ostatnie daty podane w tym czacie.
-const chatDates = new Map<string, { checkin: string; checkout: string; at: number }>();
-// 60 min od OSTATNIEGO wyszukiwania w czacie (okno przesuwne). Wczesniej 12 h -
-// test 2026-10-30: "nowa sesja" w Teams po 5 h dostala daty z porannej rozmowy
-// (Teams 1:1 z botem to jeden czat - serwer nie widzi nowej sesji).
+// Daty z wczesniejszego pytania w czacie (2026-10-29) - od 09.11 w services/stayContext.ts.
+// Ten sam TTL (60 min od ostatniego uzycia) dla ostatniego miasta/kraju:
 const CHAT_DATES_TTL_MS = 60 * 60 * 1000;
-
-function rememberChatDates(scope: string, checkin: string, checkout: string): void {
-  if (!scope) return;
-  chatDates.set(scope, { checkin, checkout, at: Date.now() });
-  if (chatDates.size > 2000) {
-    const oldest = chatDates.keys().next().value;
-    if (oldest !== undefined) chatDates.delete(oldest);
-  }
-}
-
-function recentChatDates(scope: string): { checkin: string; checkout: string } | null {
-  if (!scope) return null;
-  const hit = chatDates.get(scope);
-  if (!hit || Date.now() - hit.at > CHAT_DATES_TTL_MS) return null;
-  const today = new Date().toISOString().split("T")[0];
-  if (hit.checkin < today) return null;
-  hit.at = Date.now();
-  return { checkin: hit.checkin, checkout: hit.checkout };
-}
 
 // Ostatnie miasto/kraj wyszukiwania w czacie (60 min od ostatniego uzycia) - fallback,
 // gdy agent poda landmark_name bez city/country.
@@ -185,8 +160,6 @@ function countryCodeFromName(name: string): string | null {
   return COUNTRY_NAME_CODES[n] ?? null;
 }
 
-// Slowa wskazujace, ze user pyta o hotele przy konkretnym miejscu (patrz "PROSBA O HOTELE PRZY MIEJSCU").
-const NEAR_PLACE_RE = /(^|[^\p{L}])(ko[lł]o|przy|w pobli[zż]u|blisko|obok|niedaleko|dworz\p{L}*|dworc\p{L}*|stacj\p{L}*|lotnisk\p{L}*|near|close to|next to|airport|station)([^\p{L}]|$)/iu;
 const nearPlaceGuard = new Map<string, number>();
 
 function getDefaultDates(): { checkin: string; checkout: string } {
@@ -289,62 +262,6 @@ const COORD_SNAP_MAX_AGE_MS = 30 * 60 * 1000;
 const COORD_SNAP_MAX_POINTS = 200;
 const recentSearchPoints: { scope: string; lat: number; lon: number; at: number }[] = [];
 
-// === USER_REQUEST (v6, testy 2026-10-29) ===
-// Mapa aktywnosci w Copilot Studio: hotelowy przekazal "Wyszukaj hotele 5-gwiazdkowe
-// w okolicy lotniska Balice..." (bez odleglosci), a agent MCP sam wyslal radius_km:2.
-// Przy Sukiennicach sam wyslal exclude_hostels:false. Opis narzedzia tego zabrania,
-// ale model i tak to robi. Dlatego gdy przychodzi user_request (doslowny tekst prosby),
-// promien i dopuszczenie hosteli ustala serwer z tego tekstu, a nie z pol od modelu.
-const USER_DISTANCE_RE = /(\d+(?:[.,]\d+)?)\s*(km\b|kilometr\w*|m\b|metr\w*)/i;
-const OTHER_ACCOMMODATION_RE = new RegExp(
-  "hostel|apartament|apartment|pensjonat|kwater|b\\s*&\\s*b|bed and breakfast|willa|villa|" +
-  "dowoln\\w* (typ|rodzaj|obiekt|nocleg)|any (type|kind|accommodation)|wszystkie (typy|rodzaje|obiekty)|" +
-  // 06.11 (Ossendrecht): "inne obiekty noclegowe" - serwer wymuszal "tylko hotele"
-  "obiekt\\w*\\s+nocleg|inn\\w*\\s+obiekt|nocleg(i|ów|ow|owe|owych)\\b|other (properties|accommodation)|any accommodation",
-  "i");
-
-// === TYPY OBIEKTOW Z PROSBY (06.11, zgloszenie Julii: "apartament kolo Magazynowej 7" - na liscie
-// byly Holiday Inn Express i Centrum Barnabitow; decyzja: "robimy to, o co user poprosi") ===
-// User wymienia typy -> pokazujemy tylko te typy (kilka naraz = suma). "hotel" obok innego typu
-// dolacza typy hotelowe. Bez nazwy typu - tylko hotele (jak dotad); "obiekty noclegowe",
-// "dowolny nocleg" - wszystkie typy. Zaprzeczenia ("bez hosteli", "nie apartament") sa pomijane.
-const REQUESTED_TYPE_RULES: { re: RegExp; types: number[]; label: string }[] = [
-  { re: /apartament|apartment|\bstudio\b/i, types: [201], label: "apartamenty" },
-  { re: /hostel/i, types: [203], label: "hostele" },
-  { re: /\bb\s*&\s*b\b|\bbnb\b|bed\s*(and|&)\s*breakfast/i, types: [208], label: "B&B" },
-  { re: /pensjonat|guest\s*house/i, types: [216], label: "pensjonaty" },
-  { re: /\bwill(a|e|i|ę|ach)\b|\bvillas?\b/i, types: [213], label: "wille" },
-  { re: /dom(y|ów|ow|ek|ki|ku|kach)?\s+wakacyjn|\bdomk(i|u|ów|ow|iem)?\b|\bdomek\b|holiday\s+home|vacation\s+home/i, types: [220], label: "domy wakacyjne" },
-  { re: /kwater|pokoj\w*\s+go[sś]cinn|pokoje\s+go[sś]cinne|homestay/i, types: [222], label: "kwatery prywatne" },
-];
-const HOTEL_WORD_RE = /\bhotel\w*|\bmotel\w*|\bzajazd\w*|\bresort\w*/i;
-const NEGATED_TYPE_RE = /(bez|nie|oprócz|oprocz|poza|except|without|not|no)\s+(\p{L}+(\s*&\s*\p{L}+)?)/giu;
-
-function requestedAccommodationTypes(text: string): { types: number[]; labels: string[] } | null {
-  if (!text) return null;
-  const t = text.replace(NEGATED_TYPE_RE, " ");
-  const types = new Set<number>();
-  const labels: string[] = [];
-  for (const r of REQUESTED_TYPE_RULES) {
-    if (r.re.test(t)) { r.types.forEach((x) => types.add(x)); labels.push(r.label); }
-  }
-  if (types.size === 0) return null;
-  if (HOTEL_WORD_RE.test(t.replace(/hostel\w*/gi, " "))) {
-    ALLOWED_HOTEL_ACCOMMODATION_TYPES.forEach((x) => types.add(x));
-    labels.unshift("hotele");
-  }
-  return { types: Array.from(types).sort((a, b) => a - b), labels };
-}
-
-function parseUserDistanceKm(text: string): number | null {
-  const m = USER_DISTANCE_RE.exec(text);
-  if (!m) return null;
-  const value = Number(m[1].replace(",", "."));
-  if (!isFinite(value) || value <= 0) return null;
-  const km = /^k/i.test(m[2]) ? value : value / 1000;
-  if (km < 0.1 || km > 50) return null;
-  return Math.round(km * 1000) / 1000;
-}
 
 // Odleglosc podana przez usera dla danego punktu - zeby "teraz 4 gwiazdki" po
 // "w promieniu 2 km" zostalo przy 2 km, choc nowa wiadomosc nie ma liczby.
@@ -371,15 +288,6 @@ function rememberUserRadius(scope: string, lat: number, lon: number, km: number)
 // wyslal "dalej" jako NOWE wyszukiwanie -> znowu pozycje 1-10, ktore agent podpisal
 // jako 11-20 albo przenumerowal na 31-40. Krotka wiadomosc o kolejnych wynikach
 // traktujemy wiec jako kontynuacje niezaleznie od flagi od modelu.
-const NEXT_BATCH_WORDS_RE = /(^|[^\p{L}])(dalej|kolejn\p{L}*|nast[eę]pn\p{L}*|wi[eę]cej|pozosta[lł]\p{L}*|reszt\p{L}*|next|more)([^\p{L}]|$)/iu;
-const NEXT_BATCH_MAX_LEN = 60;
-
-function isNextBatchRequest(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.length > NEXT_BATCH_MAX_LEN) return false;
-  if (/\d\s*(\*|gwiazd|km|m\b|pln|zł|eur)/iu.test(t)) return false;
-  return NEXT_BATCH_WORDS_RE.test(t);
-}
 
 function recentUserRadius(scope: string, lat: number, lon: number): number | null {
   const e = userRadiusByPoint.get(pointKey(scope, lat, lon));
@@ -556,19 +464,6 @@ let landmarkClient: BookingApiClient | null = null;
 // === KILKA PROB PRZY NIEZNALEZIONYM MIEJSCU (05.11, Wroclaw: "blisko adresu ul. Weigla 5 -
 // to jest 4 Szpital Wojskowy" - agent podal tylko "ul. Weigla 5", landmarku nie ma, geokodowanie
 // nie trafilo, a druga nazwa z tej samej wiadomosci byla na liscie Booking.com) ===
-const STREET_PREFIX_RE = /^\s*(ul\.?|ulica|al\.?|aleja|aleje|pl\.?|plac|os\.?|osiedle)\s+/i;
-
-function alternativeNamesFromRequest(userText: string, given: string): string[] {
-  const out: string[] = [];
-  const g = normalizeText(given);
-  const re = /(?:to jest|tj\.|czyli|\s[-–]\s)\s*([^.,;\n]{3,60})/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(userText)) !== null) {
-    const cand = m[1].trim().replace(/^(to jest|tj\.|czyli)\s+/i, "").replace(/\s+(nocleg|hotel|hotele|na)\b.*$/i, "").trim();
-    if (cand.length >= 3 && normalizeText(cand) !== g && !normalizeText(cand).includes(g)) out.push(cand);
-  }
-  return out.slice(0, 2);
-}
 
 async function resolveLandmarkForSearch(name: string, city: string, country: string, scope: string, userText?: string): Promise<LandmarkResolution> {
   const first = await resolveLandmarkOnce(name, city, country, scope);
@@ -836,23 +731,30 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       // "sniadanie w cenie" = filtr: Booking.com zwraca wtedy ceny ofert ze sniadaniem
       // (meal_plan: breakfast_included, test 02.11). Tekst usera rozstrzyga.
       if (userText && !params.continue_previous) {
-        const t = userText.replace(/bed\s*(and|&)\s*breakfast|b\s*&\s*b/gi, " ");
-        if (/bez\s+[sś]niada|without\s+breakfast|no\s+breakfast/i.test(t)) {
+        const bi = breakfastIntent(userText);
+        if (bi === "off") {
           if (params.breakfast_only) console.error("=== DIAG sniadanie: \"bez sniadania\" w tekscie usera - wylaczam filtr.");
           params.breakfast_only = false;
-        } else if (/[sś]niada|breakfast/i.test(t) && !params.breakfast_only) {
+        } else if (bi === "on" && !params.breakfast_only) {
           params.breakfast_only = true;
           console.error("=== DIAG sniadanie: tekst usera wspomina sniadanie - ceny ofert ze sniadaniem w cenie (meal_plan).");
         }
       }
 
+      // === UDOGODNIENIA (09.11): synonimy -> klucze filtra, nieznane pomijamy i mowimy o nich agentowi ===
+      const facilitiesNorm = normalizeFacilities(params.required_facilities);
+      const unsupportedFilters = facilitiesNorm.unsupported;
+      params.required_facilities = facilitiesNorm.known.length > 0 ? facilitiesNorm.known : undefined;
+      if (unsupportedFilters.length > 0 && !widen) {
+        console.error("=== OSTRZEZENIE udogodnienia: nie umiem filtrowac po " + JSON.stringify(unsupportedFilters) +
+          " - szukam bez nich (do uzupelnienia mapowania).");
+      }
+
       // === PARKING Z TRESCI PROSBY (05.11, Wroclaw: w drugim wywolaniu agent zgubil
       // required_facilities=parking, choc prosba "ze sniadaniem i parkingiem" przyszla w calosci) ===
       if (userText && !params.continue_previous) {
-        const wantsParking = /parking|garaż|garaz|\bparkowan/i.test(userText) &&
-          !/bez\s+parking|parking\s+(nie\s+jest\s+)?(niepotrzebny|zbędny|zbedny)|without\s+parking/i.test(userText);
         const has = (params.required_facilities ?? []).includes("parking");
-        if (wantsParking && !has) {
+        if (wantsParking(userText) && !has) {
           params.required_facilities = [...(params.required_facilities ?? []), "parking"];
           console.error("=== DIAG parking: tekst usera wspomina parking, a agent nie podal filtra - dokladam required_facilities=parking.");
         }
@@ -885,48 +787,27 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         };
       }
 
+      // === POBYT (09.11): daty i goscie ze wspolnego kontekstu (services/stayContext.ts) -
+      // agent -> tresc prosby -> pamiec rozmowy -> domyslne. Przy poszerzaniu promienia (widen)
+      // liczone ponownie z tych samych danych, bez logu.
+      const stay = resolveStay(scope, params, "wyszukiwanie", { quiet: !!widen });
+      if (stay.pastError) {
+        return { content: [{ type: "text", text: stay.pastError }], isError: true };
+      }
       // (przeglad pkt 11) Booking.com liczy cene dzieci tylko z ich wieku - sama liczba dzieci
       // bez wieku dawala cicho cene dla samych doroslych.
-      if (!params.continue_previous && (params.children_count ?? 0) > 0 &&
-          (!params.children_ages || params.children_ages.length !== params.children_count)) {
-        return {
-          content: [{
-            type: "text",
-            text: "The age of each child is needed for correct prices (children_count=" + params.children_count +
-              ", children_ages=" + JSON.stringify(params.children_ages ?? []) + "). Suggested reply: a question about " +
-              "the age of each child; then search with children_ages.",
-          }],
-          isError: true,
-        };
+      if (!params.continue_previous && stay.children_without_age > 0) {
+        return { content: [{ type: "text", text: childAgesQuestion(stay) }], isError: true };
       }
+      params.adults = stay.adults;
+      params.rooms = stay.rooms;
+      params.children_ages = stay.children_ages.length > 0 ? stay.children_ages : undefined;
+      params.children_count = stay.children_ages.length > 0 ? stay.children_ages.length : undefined;
 
-      let checkin = params.checkin;
-      let checkout = params.checkout;
+      let checkin = stay.checkin;
+      let checkout = stay.checkout;
       let datesAssumed = false;
-      let datesFromChat = false;
-
-      // Daty: "dzis"/"jutro", zamieniony dzien z miesiacem, jedna data = 1 noc, data z przeszlosci.
-      if (!widen) {
-        const fixed = fixStayDates(checkin, checkout, params.user_request);
-        if (fixed.pastError) {
-          return { content: [{ type: "text", text: fixed.pastError }], isError: true };
-        }
-        checkin = fixed.checkin;
-        checkout = fixed.checkout;
-      }
-
-      if (checkin && checkout) {
-        rememberChatDates(scope, checkin, checkout);
-      } else if (!checkin && !checkout && recentChatDates(scope)) {
-        const prev = recentChatDates(scope)!;
-        checkin = prev.checkin;
-        checkout = prev.checkout;
-        datesFromChat = true;
-        if (!widen) {
-          console.error("=== DIAG daty: brak dat w zapytaniu - biore daty z wczesniejszego pytania w tym czacie: " +
-            checkin + " - " + checkout + ".");
-        }
-      }
+      const datesFromChat = stay.dates_source === "rozmowa";
 
       if (!checkin || !checkout) {
         const defaults = getDefaultDates();
@@ -1525,7 +1406,9 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
                 "filter (found_in_location -> ... -> final): " + breakdownText + "." + specificHint +
                 " Suggested reply: no hotels for these criteria, the filter that reduced the list to zero (from the " +
                 "breakdown), and a question whether to relax that filter (e.g. 'Czy pokazać hotele 4* w tej okolicy?'). " +
-                "A search with relaxed filters follows only after the user agrees.",
+                "A search with relaxed filters follows only after the user agrees." +
+                (unsupportedFilters.length > 0 ? " Not applied (the server cannot filter by them): " +
+                  unsupportedFilters.join(", ") + " - say so." : ""),
             }],
             structuredContent: {
               zero_results_breakdown: stepBreakdown,
@@ -1565,6 +1448,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (params.chain) appliedFilters.push("chain/brand: " + params.chain);
         if (appliedFilters.length > 0) {
           output.filters_applied_note = "Filters enforced server-side (guaranteed accurate, not just re-described): " + appliedFilters.join("; ") + ".";
+        }
+        if (unsupportedFilters.length > 0) {
+          output.unsupported_filters = unsupportedFilters;
+          output.unsupported_filters_note = "The server cannot filter by: " + unsupportedFilters.join(", ") +
+            ". These hotels were NOT checked for it - tell the user once above the list and suggest checking it in " +
+            "the hotel details or on Booking.com.";
         }
 
         output.total_matching = limitedAll.length;
@@ -1674,6 +1563,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           };
           if (output.filters_applied_note) meta.filters_applied_note = output.filters_applied_note;
           if (output.breakfast_reminder) meta.breakfast_reminder = output.breakfast_reminder;
+          if (output.unsupported_filters_note) meta.unsupported_filters_note = output.unsupported_filters_note;
           if (output.parking_note) meta.parking_note = output.parking_note;
           if (usingCoordinates) meta.radius_km = params.radius_km;
           saveResultSet(searchKey, limitedAll, pageSize, meta, scope);

@@ -4,7 +4,7 @@ import { BookingApiClient } from "../services/bookingClient.js";
 import { RequestContext } from "../services/requestContext.js";
 import { rememberChatHotel, recentChatHotel } from "../services/chatHotel.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM } from "../constants.js";
-import { fixStayDates } from "../services/dates.js";
+import { resolveStay, childAgesQuestion } from "../services/stayContext.js";
 
 // === DOSTEPNOSC JEDNEGO HOTELU (02.11, zgloszenie Emilii: "czy w grudniu hotel
 // Sumratin w Dubrowniku przyjmuje gosci?") ===
@@ -27,8 +27,16 @@ const InputSchema = z.object({
     .describe("Year for month; omit - the nearest future occurrence of the month is used."),
   find_first_available: z.boolean().optional()
     .describe("true for 'od kiedy jest otwarty?' / 'kiedy najbliższy wolny termin?': the server checks one date per month for the next 12 months."),
-  adults: z.number().int().min(1).max(30).default(1),
-  rooms: z.number().int().min(1).max(30).default(1),
+  // Goscie i tresc prosby (09.11, zgloszenie Damiana: dziecko zginelo przy dostepnosci Faltomu) -
+  // ustalane wspolnie z wyszukiwaniem (services/stayContext.ts): agent -> tresc prosby -> rozmowa.
+  adults: z.number().int().min(1).max(30).optional()
+    .describe("Number of adults. Omit if the user did not say - the server uses user_request or the conversation."),
+  rooms: z.number().int().min(1).max(30).optional(),
+  children_count: z.number().int().min(0).max(10).optional(),
+  children_ages: z.array(z.number().int().min(0).max(17)).optional()
+    .describe("Age of each child, e.g. [1] for a 1.5-year-old."),
+  user_request: z.string().max(2000).optional()
+    .describe("The user's request, verbatim - the server reads dates and guests from it when parameters are missing."),
   currency: z.string().min(3).max(3).default("PLN"),
   breakfast_only: z.boolean().default(false)
     .describe("true for 'ze śniadaniem' - prices of offers with breakfast included."),
@@ -86,11 +94,15 @@ interface CheckResult {
   error?: string;
 }
 
-async function checkOne(client: BookingApiClient, id: number, p: Input, checkin: string, checkout: string): Promise<CheckResult> {
+interface Guests { adults: number; rooms: number; children_ages: number[] }
+
+async function checkOne(client: BookingApiClient, id: number, p: Input, g: Guests, checkin: string, checkout: string): Promise<CheckResult> {
+  const guests: any = { number_of_adults: g.adults, number_of_rooms: g.rooms };
+  if (g.children_ages.length > 0) guests.children = g.children_ages;
   const body: any = {
     booker: { country: DEFAULT_BOOKER_COUNTRY, platform: DEFAULT_BOOKER_PLATFORM },
     checkin, checkout,
-    guests: { number_of_adults: p.adults, number_of_rooms: p.rooms },
+    guests,
     currency: p.currency,
     accommodations: [id],
     extras: ["products"],
@@ -132,7 +144,9 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         "First get hotel_id with booking_find_hotel in this message; in a follow-up about the same hotel omit hotel_id. " +
         "Report each checked date: available with price (total for the stay) or no free rooms. If no date is " +
         "available, do NOT say the hotel is closed - say there are no free rooms in the checked dates and the hotel may " +
-        "be closed for the season or sold out, and suggest confirming with the hotel. Follow note in the response.",
+        "be closed for the season or sold out, and suggest confirming with the hotel. Follow note in the response. " +
+        "Always copy the user's request verbatim into user_request and pass children_ages when children travel " +
+        "(the server keeps guests and dates of this conversation).",
       inputSchema: InputSchema.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -155,15 +169,23 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         };
       }
 
+      // Miesiac / najblizszy wolny termin maja pierwszenstwo - wtedy daty z tresci prosby i rozmowy
+      // nie sa brane (ale goscie tak).
+      const toolPicksDates = !params.checkin && !!(params.month || params.find_first_available);
+      const stay = resolveStay(scope, params, "dostepnosc", { ignoreDates: toolPicksDates });
+      if (stay.pastError) {
+        return { content: [{ type: "text", text: stay.pastError }], isError: true };
+      }
+      if (stay.children_without_age > 0) {
+        return { content: [{ type: "text", text: childAgesQuestion(stay) }], isError: true };
+      }
+      const guests: Guests = { adults: stay.adults, rooms: stay.rooms, children_ages: stay.children_ages };
+
       let dates: { checkin: string; checkout: string }[];
       let mode: string;
-      if (params.checkin) {
-        const fixed = fixStayDates(params.checkin, params.checkout, undefined);
-        if (fixed.pastError) {
-          return { content: [{ type: "text", text: fixed.pastError }], isError: true };
-        }
-        const ci = fixed.checkin!;
-        const co = fixed.checkout && fixed.checkout > ci ? fixed.checkout : addDays(ci, 1);
+      if (stay.checkin && !toolPicksDates) {
+        const ci = stay.checkin;
+        const co = stay.checkout && stay.checkout > ci ? stay.checkout : addDays(ci, 1);
         dates = [{ checkin: ci, checkout: co }];
         mode = "dates";
       } else if (params.month) {
@@ -182,7 +204,7 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         return { content: [{ type: "text", text: "All dates in that month are in the past - ask the user which month or year they mean." }], isError: true };
       }
 
-      const results = await Promise.all(dates.map((d) => checkOne(client, id!, params, d.checkin, d.checkout)));
+      const results = await Promise.all(dates.map((d) => checkOne(client, id!, params, guests, d.checkin, d.checkout)));
       rememberChatHotel(scope, id, name);
       const availableCount = results.filter((r) => r.available).length;
       const firstAvailable = results.find((r) => r.available) ?? null;
@@ -206,7 +228,9 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         hotel_id: id,
         hotel_name: name,
         mode,
-        adults: params.adults,
+        adults: guests.adults,
+        children_ages: guests.children_ages.length > 0 ? guests.children_ages : undefined,
+        rooms: guests.rooms,
         breakfast_only: params.breakfast_only,
         results,
         note,

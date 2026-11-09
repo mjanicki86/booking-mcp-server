@@ -18,10 +18,12 @@ export const HotelSearchInputSchema = z.object({
     .describe('Check-in date YYYY-MM-DD. Optional - do not ask for dates; without them the server reuses earlier dates from this conversation or sample dates.'),
   checkout: z.string().regex(dateRegex).optional()
     .describe('Check-out date in YYYY-MM-DD format. OPTIONAL - omit if the user did not give dates.'),
-  adults: z.number().int().min(1).max(30).default(1)
-    .describe("Number of adult guests (default: 1)"),
-  rooms: z.number().int().min(1).max(30).default(1)
-    .describe("Number of rooms (default: 1)"),
+  // Bez .default() (09.11) - serwer musi widziec, czy agent podal gosci; brak = tresc prosby,
+  // potem pamiec rozmowy, potem 1 (services/stayContext.ts).
+  adults: z.number().int().min(1).max(30).optional()
+    .describe("Number of adult guests. Omit if the user did not say - the server reads it from user_request or earlier in the conversation (default 1)."),
+  rooms: z.number().int().min(1).max(30).optional()
+    .describe("Number of rooms. Omit if the user did not say (default 1)."),
   children_count: z.number().int().min(0).max(10).optional()
     .describe("Number of children - always together with children_ages."),
   children_ages: z.array(z.number().int().min(0).max(17)).optional()
@@ -42,10 +44,10 @@ export const HotelSearchInputSchema = z.object({
     .describe("true when the user names one category ('hotele 3*', '4-gwiazdkowy'); false for 'co najmniej 3*', '3+'."),
   min_review_score: z.number().min(1).max(10).optional()
     .describe("Minimum guest rating out of 10, e.g. 'ocena powyżej 8' -> 8."),
-  required_facilities: z.array(z.enum([
-    "pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed"
-  ])).optional()
-    .describe("Amenities the hotel must have, only these values: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed (pets -> pets_allowed)."),
+  // (09.11) Dowolne slowa - nieznana wartosc nie odrzuca juz calego wywolania (agent wyslal
+  // "playroom" i dostal blad). Serwer mapuje synonimy, nieznane zwraca w unsupported_filters.
+  required_facilities: z.array(z.string().min(1).max(60)).max(15).optional()
+    .describe("Amenities the hotel must have: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed. Other amenities may be passed too - the server says in unsupported_filters which ones it cannot filter by; tell the user."),
   exclude_hostels: z.boolean().default(true)
     .describe("Hotels only - every other property type (hostels, apartments, guesthouses, villas, B&Bs etc.) is excluded. Default true; false only if the user accepts other property types."),
   chain: z.string().min(2).max(80).optional()

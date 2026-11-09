@@ -154,6 +154,25 @@ app.post("/mcp", async (req: Request, res: Response) => {
       " -> HTTP " + res.statusCode + ", " + (Date.now() - started) + " ms ===");
   });
 
+  // (09.11) Blad zwrocony agentowi (isError, w tym odrzucenie parametrow przez schemat) trafia do
+  // logu. Wczesniej "playroom" spoza listy udogodnien konczyl sie bledem po 4 ms bez sladu w logach.
+  if (toolName) {
+    const origEnd = res.end.bind(res) as (...a: any[]) => Response;
+    (res as any).end = (chunk?: any, ...rest: any[]) => {
+      try {
+        const text = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : "";
+        if (text.includes('"isError":true') || text.includes('"error":{')) {
+          const j = JSON.parse(text);
+          const msg = j?.error?.message ?? j?.result?.content?.[0]?.text ?? text;
+          console.error("=== BLAD dla agenta (" + toolName + "): " + String(msg).slice(0, 500));
+        }
+      } catch {
+        // odpowiedz nie jest pojedynczym JSON-em - pomijamy
+      }
+      return origEnd(chunk, ...rest);
+    };
+  }
+
   const server = buildServer(contextFromHeaders(req.headers));
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
