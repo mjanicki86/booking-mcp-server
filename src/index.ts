@@ -13,6 +13,7 @@ import { registerFindLandmarkTool } from "./tools/findLandmark.js";
 import { registerHotelAvailabilityTool } from "./tools/hotelAvailability.js";
 import { registerHotelsInfoTool } from "./tools/hotelsInfo.js";
 import { RequestContext, contextFromHeaders } from "./services/requestContext.js";
+import { scheduleSelftest } from "./selftest.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
@@ -254,4 +255,6 @@ app.listen(PORT, () => {
   prewarm().catch((err) => {
     console.error("=== PREWARM: blad (serwer dziala dalej): " + (err instanceof Error ? err.message : String(err)));
   });
+  // (09.11) Autotest kazdego narzedzia na zywo - 2 min po starcie, potem co 24 h (src/selftest.ts).
+  scheduleSelftest(PORT);
 });

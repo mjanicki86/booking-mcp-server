@@ -4,12 +4,14 @@
 //   node dist/probe.js hotel 87169 2026-11-11 2026-11-13 [dorosli] [wiek_dzieci np. 1,5]
 //   node dist/probe.js facilities kid
 //   node dist/probe.js text "hotele w Trojmiescie dla 2 doroslych z poltorarocznym dzieckiem 11-13.11"
+//   node dist/probe.js selftest               (autotest wszystkich narzedzi na zywo, jak po wdrozeniu)
 //   node dist/probe.js places-test            (pomiar Google Places + strony hoteli, 22 hotele z listy 02.11)
 //   node dist/probe.js places "Hotel X" "ulica, miasto"
 // Klucz API nie jest nigdzie wypisywany.
 import { config } from "./config.js";
 import { parseDatesFromText, fixStayDates } from "./services/dates.js";
 import { findPlace, googlePlacesEnabled } from "./services/googlePlaces.js";
+import { runSelftest } from "./selftest.js";
 import { parkingFromWebsite } from "./services/hotelWebsite.js";
 import { parseGuestsFromText, requestedAccommodationTypes, breakfastIntent, wantsParking, parseUserDistanceKm } from "./services/textParsing.js";
 
@@ -144,11 +146,12 @@ async function main(): Promise<void> {
   else if (cmd === "facilities") await facilities(args);
   else if (cmd === "text") text(args);
   else if (cmd === "places-test") await placesTest();
+  else if (cmd === "selftest") await runSelftest(parseInt(process.env.PORT ?? "8080", 10), (l) => console.log(l));
   else if (cmd === "places") { if (args[0]) await placesOne(args[0], args[1] ?? "", true); }
   else {
     console.log("Komendy:\n  node dist/probe.js hotel <hotel_id> <checkin> <checkout> [dorosli] [wiek,wiek]\n" +
       "  node dist/probe.js facilities <slowo>\n  node dist/probe.js text \"<tresc prosby>\"\n" +
-      "  node dist/probe.js places-test\n  node dist/probe.js places \"<nazwa hotelu>\" \"<adres>\"");
+      "  node dist/probe.js selftest\n  node dist/probe.js places-test\n  node dist/probe.js places \"<nazwa hotelu>\" \"<adres>\"");
   }
 }
 
