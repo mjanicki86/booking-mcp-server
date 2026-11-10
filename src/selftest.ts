@@ -16,6 +16,7 @@ interface Scenario {
   tool: string;
   args: (ctx: Ctx) => Record<string, unknown> | null; // null = pomin (brak danych z poprzedniego kroku)
   check: (r: Result, ctx: Ctx) => string | null;      // null = OK, tekst = powod bledu
+  delayMs?: number;                                   // odczekanie przed wywolaniem
 }
 
 interface Ctx {
@@ -53,7 +54,17 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // Zabezpieczenie z 22.10: paczka szybciej niz 8 s po poprzedniej = model sam dociaga -> odmowa.
+    name: "wyszukiwanie: dalej od razu = zablokowane (ochrona przed dociaganiem)",
+    tool: "booking_search_hotels",
+    args: (c) => (c.firstBatchTotal != null && c.firstBatchTotal > 10
+      ? { city: "Warsaw", country: "pl", min_stars: 3, exact_stars: true, checkin: c.checkin, checkout: c.checkout,
+        continue_previous: true, user_request: "dalej" } : null),
+    check: (r) => (r.data?.status === "wait_for_user" ? null : "brak blokady, status: " + (r.data?.status ?? "lista")),
+  },
+  {
     name: "wyszukiwanie: dalej (kolejna paczka)",
+    delayMs: 9000,
     tool: "booking_search_hotels",
     args: (c) => (c.firstBatchTotal != null && c.firstBatchTotal > 10
       ? { city: "Warsaw", country: "pl", min_stars: 3, exact_stars: true, checkin: c.checkin, checkout: c.checkout,
@@ -224,6 +235,7 @@ export async function runSelftest(port: number, log: Log = (l) => console.error(
     const args = s.args(ctx);
     if (!args) { log("=== SELFTEST POMINIETY " + s.name + " (brak danych z poprzedniego kroku)"); continue; }
     total++;
+    if (s.delayMs) await new Promise((res) => setTimeout(res, s.delayMs));
     const t0 = Date.now();
     try {
       const r = await callTool(port, convId, 9000 + i, s.tool, args);
