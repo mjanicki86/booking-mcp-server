@@ -11,7 +11,7 @@ import {
 import { fetchParkingSummaries } from "./hotelDetails.js";
 import { RequestContext } from "../services/requestContext.js";
 import { normalizeText } from "../services/textNormalize.js";
-import { ALLOWED_HOTEL_ACCOMMODATION_TYPES, NEAR_PLACE_RE, OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, STREET_PREFIX_RE, alternativeNamesFromRequest, breakfastIntent, wantsParking, normalizeFacilities } from "../services/textParsing.js";
+import { ALLOWED_HOTEL_ACCOMMODATION_TYPES, NEAR_PLACE_RE, OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, STREET_PREFIX_RE, alternativeNamesFromRequest, breakfastIntent, wantsParking, normalizeFacilities, kidsFacilitiesFromText } from "../services/textParsing.js";
 import { resolveStay, childAgesQuestion } from "../services/stayContext.js";
 import { brandIdsForChain, brandLabel } from "../services/chains.js";
 import { rememberSearchBatch } from "../services/shownHotels.js";
@@ -109,6 +109,12 @@ const AMENITY_FACILITY_IDS: Record<string, number[]> = {
   restaurant: [3],
   sauna: [10],
   pets_allowed: [4],
+  // (10.11, zgloszenie Damiana: "hotel z atrakcjami dla dzieci, np. bawialnia") - ID z
+  // /accommodations/constants (test 09.11). kids_play: wystarczy jedno z czterech.
+  kids_play: [172, 144, 56, 173],   // Indoor play area, Kids' club, Children's playground, Kids' outdoor play equipment
+  kids_pool: [258],                  // Kids' pool
+  family_rooms: [28],                // Family rooms
+  babysitting: [21],                 // Babysitting/child services
 };
 
 // Okno "ok. 3 miesiace do przodu" potrafi wpasc dokladnie w swieta - dla
@@ -748,6 +754,15 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       if (unsupportedFilters.length > 0 && !widen) {
         console.error("=== OSTRZEZENIE udogodnienia: nie umiem filtrowac po " + JSON.stringify(unsupportedFilters) +
           " - szukam bez nich (do uzupelnienia mapowania).");
+      }
+
+      // === UDOGODNIENIA DLA DZIECI Z TRESCI PROSBY (10.11) - jak parking ponizej ===
+      if (userText) {
+        const kids = kidsFacilitiesFromText(userText).filter((k) => !(params.required_facilities ?? []).includes(k));
+        if (kids.length > 0) {
+          params.required_facilities = [...(params.required_facilities ?? []), ...kids];
+          if (!widen) console.error("=== DIAG dzieci: tekst usera wspomina " + kids.join(", ") + " - dokladam do required_facilities.");
+        }
       }
 
       // === PARKING Z TRESCI PROSBY (05.11, Wroclaw: w drugim wywolaniu agent zgubil

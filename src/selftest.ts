@@ -102,14 +102,26 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "wyszukiwanie: nieznane udogodnienie nie blokuje (playroom)",
+    name: "wyszukiwanie: nieznane udogodnienie nie blokuje (rooftop bar)",
     tool: "booking_search_hotels",
-    args: (c) => ({ city: "Warsaw", country: "pl", checkin: c.checkin, checkout: c.checkout, required_facilities: ["playroom"],
-      user_request: "hotele z bawialnią w Warszawie" }),
+    args: (c) => ({ city: "Warsaw", country: "pl", checkin: c.checkin, checkout: c.checkout, required_facilities: ["rooftop bar"],
+      user_request: "hotele z barem na dachu w Warszawie" }),
     check: (r) => {
       if (r.isError) return "blad: " + r.text.slice(0, 150);
       const u = r.data?.unsupported_filters;
-      return Array.isArray(u) && u.includes("playroom") ? null : "brak unsupported_filters";
+      return Array.isArray(u) && u.includes("rooftop bar") ? null : "brak unsupported_filters";
+    },
+  },
+  {
+    name: "wyszukiwanie: bawialnia z tresci prosby (Gdansk, 2 doroslych + dziecko)",
+    tool: "booking_search_hotels",
+    args: (c) => ({ city: "Gdansk", country: "pl", checkin: c.checkin, checkout: c.checkout,
+      user_request: "hotele w Gdańsku dla dwóch dorosłych z półtorarocznym dzieckiem, z atrakcjami dla dzieci, np. bawialnia" }),
+    check: (r) => {
+      if (r.isError) return "blad: " + r.text.slice(0, 150);
+      const note = String(r.data?.filters_applied_note ?? "") + JSON.stringify(r.data?.zero_results_breakdown ?? "");
+      if (!/kids_play/.test(note) && !/kids_play/.test(r.text)) return "filtr kids_play nie wlaczony";
+      return null;
     },
   },
   {
@@ -170,6 +182,23 @@ const SCENARIOS: Scenario[] = [
       if (r.isError) return "blad: " + r.text.slice(0, 150);
       if (r.data?.hotel_id !== c.hotelId) return "inny hotel: " + r.data?.hotel_id;
       return r.data?.results?.[0]?.checkin === c.checkin ? null : "daty nie z rozmowy";
+    },
+  },
+  {
+    name: "znajdz hotel: miasto z nazwy (Faltom Gdynia -> Rumia)",
+    tool: "booking_find_hotel",
+    args: () => ({ hotel_name: "Hotel Spa Faltom Gdynia Rumia", city: "Gdynia", country: "pl" }),
+    check: (r) => (r.data?.status === "single_match" && /faltom/i.test(String(r.data?.hotel?.name ?? ""))
+      ? null : "status " + (r.data?.status ?? "?") + ", " + (r.data?.hotel?.name ?? r.data?.candidates?.[0]?.name ?? "brak")),
+  },
+  {
+    // Faltom (87169): Booking.com API nie zwraca ofert w zadnym terminie (test 09.11).
+    name: "dostepnosc: hotel bez ofert w API = offers_in_api false (Faltom)",
+    tool: "booking_check_hotel_availability",
+    args: (c) => ({ hotel_id: 87169, checkin: c.checkin, checkout: c.checkout, adults: 2 }),
+    check: (r) => {
+      if (r.data?.results?.[0]?.available) return null; // hotel zaczal udostepniac oferty - tez poprawnie
+      return r.data?.offers_in_api === false ? null : "offers_in_api: " + r.data?.offers_in_api;
     },
   },
   {

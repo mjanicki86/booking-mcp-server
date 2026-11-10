@@ -47,7 +47,7 @@ export const HotelSearchInputSchema = z.object({
   // (09.11) Dowolne slowa - nieznana wartosc nie odrzuca juz calego wywolania (agent wyslal
   // "playroom" i dostal blad). Serwer mapuje synonimy, nieznane zwraca w unsupported_filters.
   required_facilities: z.array(z.string().min(1).max(60)).max(15).optional()
-    .describe("Amenities the hotel must have: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed. Other amenities may be passed too - the server says in unsupported_filters which ones it cannot filter by; tell the user."),
+    .describe("Amenities the hotel must have: pool, gym, parking, wifi, air_conditioning, spa, restaurant, sauna, pets_allowed, kids_play (playroom / kids' club / playground), kids_pool, family_rooms, babysitting. Other amenities may be passed too - the server says in unsupported_filters which ones it cannot filter by; tell the user."),
   exclude_hostels: z.boolean().default(true)
     .describe("Hotels only - every other property type (hostels, apartments, guesthouses, villas, B&Bs etc.) is excluded. Default true; false only if the user accepts other property types."),
   chain: z.string().min(2).max(80).optional()

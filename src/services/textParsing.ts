@@ -192,7 +192,8 @@ export function parseGuestsFromText(text: string): GuestsFromText {
 // schemat znal 9 wartosci i odrzucil cale wywolanie, a asystent odpisal "nie udalo sie") ===
 // Agent moze wyslac dowolne slowo; znane synonimy mapujemy na klucze filtra, nieznane
 // wracaja do agenta jako "nie umiem filtrowac po" (wyszukiwanie idzie dalej bez nich).
-export const FACILITY_KEYS = ["pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed"] as const;
+export const FACILITY_KEYS = ["pool", "gym", "parking", "wifi", "air_conditioning", "spa", "restaurant", "sauna", "pets_allowed",
+  "kids_play", "kids_pool", "family_rooms", "babysitting"] as const;
 const FACILITY_SYNONYMS: Record<string, string> = {
   pool: "pool", swimming_pool: "pool", basen: "pool", indoor_pool: "pool", outdoor_pool: "pool",
   gym: "gym", fitness: "gym", fitness_center: "gym", fitness_centre: "gym", silownia: "gym",
@@ -203,7 +204,27 @@ const FACILITY_SYNONYMS: Record<string, string> = {
   restaurant: "restaurant", restauracja: "restaurant",
   sauna: "sauna",
   pets_allowed: "pets_allowed", pets: "pets_allowed", pet_friendly: "pets_allowed", zwierzeta: "pets_allowed", dogs_allowed: "pets_allowed",
+  // dzieci (10.11)
+  kids_play: "kids_play", playroom: "kids_play", play_room: "kids_play", play_area: "kids_play", indoor_play_area: "kids_play",
+  kids_club: "kids_play", kids_corner: "kids_play", playground: "kids_play", childrens_playground: "kids_play",
+  children_playground: "kids_play", kids_activities: "kids_play", bawialnia: "kids_play", plac_zabaw: "kids_play",
+  kacik_zabaw: "kids_play", klub_dla_dzieci: "kids_play", atrakcje_dla_dzieci: "kids_play",
+  kids_pool: "kids_pool", children_pool: "kids_pool", childrens_pool: "kids_pool", basen_dla_dzieci: "kids_pool", brodzik: "kids_pool",
+  family_rooms: "family_rooms", family_room: "family_rooms", pokoje_rodzinne: "family_rooms", pokoj_rodzinny: "family_rooms",
+  babysitting: "babysitting", child_care: "babysitting", childcare: "babysitting", babysitter: "babysitting", opieka_nad_dziecmi: "babysitting",
 };
+
+// Udogodnienia dla dzieci z tresci prosby (10.11) - serwer dokłada filtr sam, jak przy parkingu.
+export function kidsFacilitiesFromText(text: string): string[] {
+  if (!text) return [];
+  const t = text.toLowerCase();
+  const out: string[] = [];
+  if (/bawialni|plac\w*\s+zabaw|k[aą]cik\w*\s+zabaw|klub\w*\s+dla\s+dzieci|atrakcj\w*\s+dla\s+dzieci|kids'?\s*club|play\s*(room|area|ground)/i.test(t)) out.push("kids_play");
+  if (/basen\w*\s+dla\s+dzieci|brodzik|kids'?\s*pool|children'?s?\s+pool/i.test(t)) out.push("kids_pool");
+  if (/pok[oó]j\w*\s+rodzinn|pokoje\s+rodzinne|family\s+rooms?/i.test(t)) out.push("family_rooms");
+  if (/opiek\w*\s+(nad|dla)\s+dzie|niani|babysitt|child\s*care/i.test(t)) out.push("babysitting");
+  return out;
+}
 
 export function normalizeFacilities(values: unknown): { known: string[]; unsupported: string[] } {
   const known: string[] = [];

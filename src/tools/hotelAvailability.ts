@@ -143,8 +143,8 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         "gości w grudniu' (month: 12), 'od kiedy hotel X jest otwarty' / 'najbliższy wolny termin' (find_first_available). " +
         "First get hotel_id with booking_find_hotel in this message; in a follow-up about the same hotel omit hotel_id. " +
         "Report each checked date: available with price (total for the stay) or no free rooms. If no date is " +
-        "available, do NOT say the hotel is closed - say there are no free rooms in the checked dates and the hotel may " +
-        "be closed for the season or sold out, and suggest confirming with the hotel. Follow note in the response. " +
+        "available, follow note exactly: offers_in_api false = Booking.com does not share this hotel's offers with the " +
+        "assistant (give booking_url); otherwise the dates are sold out. Never say the hotel is closed or seasonal. " +
         "Always copy the user's request verbatim into user_request and pass children_ages when children travel " +
         "(the server keeps guests and dates of this conversation).",
       inputSchema: InputSchema.shape,
@@ -212,11 +212,45 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         availableCount + " [" + results.map((r) => r.checkin + (r.available ? "=" + r.price_total : "=brak")).join(", ") +
         "], " + (Date.now() - started) + " ms");
 
-      let note: string;
+      // === BRAK OFERT: WYPRZEDANY TERMIN czy HOTEL NIEDOSTEPNY W API? (10.11, Faltom id 87169:
+      // 0 ofert w kazdym terminie i dla kazdej liczby gosci, a strona Booking.com pokazuje pokoje) ===
+      // Przy zerze sprawdzamy po cichu 2 terminy za ~1 i ~2 mies. (1 noc, 1 dorosly, bez filtra
+      // sniadania). Sa oferty -> brak pokoi w terminie; nigdzie -> Booking.com nie udostepnia ofert.
+      let apiUnavailable = false;
+      let bookingUrl: string | null = null;
       if (availableCount === 0) {
-        note = "No free rooms in any checked date. Suggested wording: no free rooms in the checked dates (list them); " +
-          "the hotel may be closed for the season or sold out - worth confirming with the hotel. (No free rooms does " +
-          "not prove that the hotel is closed.)";
+        let probesAvailable = 0;
+        if (mode !== "first_available") {
+          const probeGuests: Guests = { adults: 1, rooms: 1, children_ages: [] };
+          const probeDates = [30, 60].map((n) => addDays(todayIso(), n));
+          const probes = await Promise.all(probeDates.map((ci) =>
+            checkOne(client, id!, { ...params, breakfast_only: false } as Input, probeGuests, ci, addDays(ci, 1))));
+          probesAvailable = probes.filter((r) => r.available).length;
+          console.error("=== DIAG dostepnosc: 0 ofert w zadanych terminach - kontrola " + probeDates.join(", ") +
+            " (1 noc, 1 dorosly): " + (probesAvailable > 0 ? "sa oferty -> termin wyprzedany" : "brak ofert -> hotel niedostepny w API"));
+        }
+        apiUnavailable = probesAvailable === 0;
+        if (apiUnavailable) {
+          try {
+            const d: any = await client.post<any>("/accommodations/details", { accommodations: [id], languages: ["pl"] });
+            const u = Array.isArray(d?.data) ? d.data[0]?.url : null;
+            bookingUrl = typeof u === "string" ? u : null;
+          } catch { bookingUrl = null; }
+        }
+      }
+
+      let note: string;
+      if (availableCount === 0 && apiUnavailable) {
+        note = "Booking.com returns NO offers for this hotel through the API used by this assistant - not in the " +
+          "requested dates and not in control dates about 1 and 2 months ahead. This usually means the hotel's rooms " +
+          "are not shared with partners (they may still be visible on the Booking.com website). Suggested wording: " +
+          "Booking.com does not share offers of this hotel with the assistant, so availability cannot be checked here - " +
+          "check it on the Booking.com website" + (bookingUrl ? " (booking_url)" : "") + " or with the hotel. " +
+          "Do NOT say the hotel is closed, sold out or seasonal.";
+      } else if (availableCount === 0) {
+        note = "No free rooms in the requested dates (list them), while the hotel does have offers on other dates - " +
+          "so these dates are sold out or restricted. Suggested wording: no free rooms in these dates; offer to check " +
+          "other dates (find_first_available or another date).";
       } else if (mode === "first_available") {
         note = "Say the first checked date with free rooms (" + firstAvailable!.checkin + ") and that dates before it had " +
           "no free rooms (one date per month was checked, so availability may start earlier within that month).";
@@ -233,6 +267,8 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         rooms: guests.rooms,
         breakfast_only: params.breakfast_only,
         results,
+        offers_in_api: availableCount > 0 ? true : apiUnavailable ? false : true,
+        booking_url: bookingUrl ?? undefined,
         note,
         data_source: "Booking.com API",
       };

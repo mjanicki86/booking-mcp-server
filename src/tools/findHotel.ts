@@ -359,7 +359,7 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         openWorldHint: true,
       },
     },
-    async (params: FindHotelInput) => {
+    async function handler(params: FindHotelInput): Promise<any> {
       // Zapamietaj hotel czatu przy jednoznacznym wyniku (dla booking_check_hotel_availability).
       const reply = (output: any) => {
         if (output?.status === "single_match" && output.hotel?.hotel_id) {
@@ -411,6 +411,33 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
             matchedEntries = inventory.filter((e) => entryMatches(e, reduced));
             console.error("=== DIAG booking_find_hotel: druga proba bez nazwy miasta \"" + reduced +
               "\": " + matchedEntries.length + " dopasowan");
+          }
+        }
+
+        // === INNE MIASTO Z NAZWY HOTELU (10.11, zgloszenie Damiana: "Hotel Spa Faltom Gdynia Rumia" -
+        // agent wzial Gdynie, a w Booking.com hotel jest w Rumi; serwer pokazal 2 inne obiekty) ===
+        // Brak dopasowania w podanym miescie -> sprawdzamy slowa z nazwy, ktore sa nazwami miast
+        // tego kraju (dokladna nazwa miasta), i jesli tam hotel jest - szukamy w tamtym miescie.
+        if (matchedEntries.length === 0 && !(params as any)._altCityTried) {
+          const nameTokens = tokenizeQuery(searchName).filter((t) => !cityExclusions.has(t) && t.length >= 4);
+          const candidates: string[] = [];
+          for (let i = 0; i < nameTokens.length; i++) {
+            if (i + 1 < nameTokens.length) candidates.push(nameTokens[i] + " " + nameTokens[i + 1]);
+            candidates.push(nameTokens[i]);
+          }
+          for (const cand of candidates.slice(0, 6)) {
+            let other: Awaited<ReturnType<typeof resolveCityId>> = null;
+            try { other = await resolveCityId(client, cand, params.country); } catch { other = null; }
+            if (!other || other.city_id === cityResult.city_id) continue;
+            const exact = [other.name, ...other.name_variants].some((v) => normalizeText(v) === normalizeText(cand));
+            if (!exact) continue;
+            const otherInventory = await loadCityInventory(client, other.city_id);
+            const hits = otherInventory.filter((e) => entryMatches(e, searchName)).length;
+            console.error("=== DIAG booking_find_hotel: brak w " + params.city + ", w nazwie jest miasto \"" + other.name +
+              "\" (id=" + other.city_id + ") - " + hits + " dopasowan.");
+            if (hits > 0) {
+              return handler({ ...params, city: other.name, _altCityTried: true } as any);
+            }
           }
         }
 

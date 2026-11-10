@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, NEAR_PLACE_RE,
   OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, breakfastIntent, wantsParking, parseGuestsFromText,
-  normalizeFacilities, alternativeNamesFromRequest,
+  normalizeFacilities, alternativeNamesFromRequest, kidsFacilitiesFromText,
 } from "../dist/services/textParsing.js";
 
 const types = (t) => requestedAccommodationTypes(t)?.labels ?? null;
@@ -75,10 +75,19 @@ test("goscie z tekstu (09.11 Damian - dziecko 1,5 roku)", () => {
   assert.deepEqual(parseGuestsFromText("1 pokój single room"), { rooms: 1 });
 });
 
-test("udogodnienia od agenta (09.11 playroom)", () => {
+test("udogodnienia od agenta (09.11 playroom, 10.11 filtr dla dzieci)", () => {
   assert.deepEqual(normalizeFacilities(["parking", "Swimming pool", "fitness"]), { known: ["parking", "pool", "gym"], unsupported: [] });
-  assert.deepEqual(normalizeFacilities(["playroom", "spa"]), { known: ["spa"], unsupported: ["playroom"] });
+  assert.deepEqual(normalizeFacilities(["playroom", "spa"]), { known: ["kids_play", "spa"], unsupported: [] });
+  assert.deepEqual(normalizeFacilities(["Kids' club", "rooftop bar"]), { known: ["kids_play"], unsupported: ["rooftop bar"] });
+  assert.deepEqual(normalizeFacilities(["family room", "brodzik"]), { known: ["family_rooms", "kids_pool"], unsupported: [] });
   assert.deepEqual(normalizeFacilities(undefined), { known: [], unsupported: [] });
+});
+
+test("udogodnienia dla dzieci z tresci prosby (10.11 Damian - Trojmiasto)", () => {
+  assert.deepEqual(kidsFacilitiesFromText("Hotel z atrakcjami dla dzieci, np. bawialnia. Musi być dostępny w terminie 11-13.11"), ["kids_play"]);
+  assert.deepEqual(kidsFacilitiesFromText("hotel z placem zabaw i basenem dla dzieci"), ["kids_play", "kids_pool"]);
+  assert.deepEqual(kidsFacilitiesFromText("pokój rodzinny w Zakopanem"), ["family_rooms"]);
+  assert.deepEqual(kidsFacilitiesFromText("hotele w Gdańsku dla 2 dorosłych z dzieckiem"), []);
 });
 
 test("druga nazwa miejsca z prosby (03.11 Weigla 5 / Szpital Wojskowy)", () => {
