@@ -165,6 +165,27 @@ const SCENARIOS: Scenario[] = [
     check: (r) => (r.data?.name && r.data?.url ? null : "brak nazwy lub linku"),
   },
   {
+    name: "szczegoly: kontakt z Google (telefon i strona hotelu)",
+    tool: "booking_get_hotel_details",
+    args: (c) => (c.hotelId ? { hotel_id: c.hotelId, user_request: "podaj telefon do hotelu" } : null),
+    check: (r) => {
+      if (r.isError) return "blad: " + r.text.slice(0, 150);
+      if (r.data?.hotel_contact === undefined) return null; // brak klucza Google w kontenerze - nie blad serwera
+      return r.data.hotel_contact?.phone ? null : "brak telefonu z Google";
+    },
+  },
+  {
+    name: "szczegoly: parking ze strony hotelu",
+    tool: "booking_get_hotel_details",
+    args: (c) => (c.hotelId ? { hotel_id: c.hotelId, question_about: "parking", user_request: "jaki parking ma ten hotel?" } : null),
+    check: (r) => {
+      if (r.isError) return "blad: " + r.text.slice(0, 150);
+      if (!r.data?.parking_summary) return "brak parking_summary z Booking.com";
+      const w = r.data?.parking_from_website;
+      return w === undefined || ["found", "not_found", "blocked"].includes(w.status) ? null : "status strony: " + w?.status;
+    },
+  },
+  {
     name: "dostepnosc hotelu (daty, 2 doroslych)",
     tool: "booking_check_hotel_availability",
     args: (c) => (c.hotelId ? { hotel_id: c.hotelId, checkin: c.checkin, checkout: c.checkout, adults: 2 } : null),

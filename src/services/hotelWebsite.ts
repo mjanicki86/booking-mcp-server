@@ -42,13 +42,30 @@ async function getHtml(url: string): Promise<{ status: number; html: string; fin
   return { status: r.status, html, finalUrl: r.url || url };
 }
 
+// (12.11) Pelne dekodowanie znakow HTML - w pomiarze zostawaly "&oacute;", "&#x119;".
+const NAMED: Record<string, string> = {
+  nbsp: " ", amp: "&", quot: "\"", apos: "'", lt: "<", gt: ">", euro: "€", ndash: "–", mdash: "—", hellip: "…",
+  laquo: "«", raquo: "»", bdquo: "„", rdquo: "”", ldquo: "“", rsquo: "’", lsquo: "‘", deg: "°", sup2: "²", times: "×",
+  oacute: "ó", Oacute: "Ó", aacute: "á", Aacute: "Á", eacute: "é", Eacute: "É", iacute: "í", Iacute: "Í",
+  uacute: "ú", Uacute: "Ú", yacute: "ý", Yacute: "Ý", auml: "ä", Auml: "Ä", ouml: "ö", Ouml: "Ö", uuml: "ü",
+  Uuml: "Ü", szlig: "ß", ccaron: "č", Ccaron: "Č", scaron: "š", Scaron: "Š", zcaron: "ž", Zcaron: "Ž",
+  rcaron: "ř", Rcaron: "Ř", ecaron: "ě", Ecaron: "Ě", ncaron: "ň", Ncaron: "Ň", dcaron: "ď", tcaron: "ť",
+  uring: "ů", Uring: "Ů", aring: "å", Aring: "Å", ccedil: "ç", ntilde: "ñ", eacute2: "é",
+};
+function decodeEntity(e: string): string | null {
+  if (e[0] === "#") {
+    const code = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    return Number.isFinite(code) && code > 0 && code < 0x110000 ? String.fromCodePoint(code) : null;
+  }
+  return NAMED[e] ?? null;
+}
+
 function htmlToText(html: string): string {
   return html
     .replace(/<(script|style|noscript|svg|template|nav)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<br\s*\/?>|<\/(p|div|li|h\d|tr|section|article|dd|dt|a|header|button)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, "\"").replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&euro;/g, "€")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+\d*);/gi, (m, e) => decodeEntity(e) ?? m)
     .replace(/[ \t\r\f\v]+/g, " ")
     .replace(/\n\s*\n+/g, "\n")
     .trim();
@@ -98,13 +115,49 @@ function parkingSnippets(text: string): string[] {
       j++;
     }
     const s = parts.join(" ").replace(/\s+/g, " ").trim();
-    if (s.length >= 15) {
-      const cut = s.length > 450 ? s.slice(0, 450) + "…" : s;
+    if (s.length >= 15 && !isNoise(s)) {
+      const cut = s.length > 450 ? cutAtSentence(s, 450) : s;
       if (!out.includes(cut)) out.push(cut);
     }
     i = j;
   }
-  return out;
+  // (12.11) najpierw fragmenty z konkretami (cena, liczba miejsc, wysokosc, busy, EV, LPG)
+  return out.map((s, idx) => ({ s, idx, score: snippetScore(s) }))
+    .sort((a, b) => b.score - a.score || a.idx - b.idx)
+    .map((x) => x.s);
+}
+
+// === ODSIEWANIE SZUMU (12.11, pomiar 22 hoteli) ===
+// Menu i listy udogodnien ("Parking Eventy Konferencje Restauracja"), opinie i oceny gosci.
+export function isNoise(s: string): boolean {
+  if (/opini|ocena\s|review|recenz|★|\d[.,]\d\s*\/\s*10|\/\s*10\b|bewertung|hodnocen/i.test(s)) return true;
+  const words = s.split(/\s+/).filter(Boolean);
+  const hasSentence = /[.:;!?]|\d/.test(s) || /\b(jest|są|oferuje|znajduje|mo[zż]na|dost[eę]pn|bezp[lł]atn|p[lł]atn|is|are|available|free|bietet|befindet|kostenlos|je|jsou|nach[aá]z)/i.test(s);
+  // krotka lista hasel bez zdania i bez liczb = menu / lista udogodnien
+  if (!hasSentence && words.length <= 10) return true;
+  // wiekszosc slow zaczyna sie wielka litera i brak interpunkcji = nawigacja
+  const caps = words.filter((w) => /^[A-ZĄĆĘŁŃÓŚŹŻÄÖÜŠČŘŽ]/.test(w)).length;
+  if (!/[.:;!?,]/.test(s) && words.length >= 3 && caps / words.length >= 0.6) return true;
+  return false;
+}
+
+export function snippetScore(s: string): number {
+  let score = 0;
+  if (EXTRA.price.test(s)) score += 3;
+  if (/\d+\s*(miejsc|stanowisk|stellpl|parkpl|spaces|spots|m[ií]st)/i.test(s)) score += 2;
+  if (EXTRA.height.test(s)) score += 2;
+  if (EXTRA.bus.test(s)) score += 2;
+  if (EXTRA.ev.test(s)) score += 2;
+  if (EXTRA.lpg.test(s)) score += 2;
+  if (/rezerwac|reserv|availability|dost[eę]pno|verf[uü]gbar|recepcj|reception|rezeptio/i.test(s)) score += 1;
+  if (/gara[zż]|garage|tiefgarage|podziemn|underground/i.test(s)) score += 1;
+  return score;
+}
+
+function cutAtSentence(s: string, max: number): string {
+  const head = s.slice(0, max);
+  const end = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "));
+  return end > max * 0.5 ? head.slice(0, end + 1) : head + "…";
 }
 
 export async function parkingFromWebsite(website: string): Promise<WebsiteParking> {
@@ -138,7 +191,11 @@ export async function parkingFromWebsite(website: string): Promise<WebsiteParkin
           res.pages_checked.push(link + " (blad: " + (e instanceof Error ? e.message : String(e)).slice(0, 60) + ")");
         }
       }
-      res.parking_snippets = snippets.slice(0, 8);
+      res.parking_snippets = snippets
+        .map((s, idx) => ({ s, idx, score: snippetScore(s) }))
+        .sort((a, b) => b.score - a.score || a.idx - b.idx)
+        .map((x) => x.s)
+        .slice(0, 5);
       const all = snippets.join(" ");
       res.found = {
         height: EXTRA.height.test(all), ev: EXTRA.ev.test(all), lpg: EXTRA.lpg.test(all),

@@ -239,3 +239,15 @@ export function normalizeFacilities(values: unknown): { known: string[]; unsuppo
   }
   return { known, unsupported };
 }
+
+// === TEMAT PYTANIA O JEDEN HOTEL (12.11) - kontakt / parking -> Google Places + strona hotelu ===
+const CONTACT_RE = /telefon|numer\s+(do|tel)|zadzwoni|kontakt|e-?mail|mail\b|adres\s+e|strona\s+(www|internetow|hotelu)|\bwww\b|witryn|recepcj\w*\s+(numer|telefon)|phone|call\b|contact|website/i;
+
+export function detailsTopic(questionAbout: unknown, userRequest: unknown): { contact: boolean; parking: boolean } {
+  const q = typeof questionAbout === "string" ? questionAbout.toLowerCase() : "";
+  const t = typeof userRequest === "string" ? userRequest : "";
+  return {
+    contact: /contact|kontakt|phone|telefon|website|www/.test(q) || CONTACT_RE.test(t),
+    parking: /parking|park/.test(q) || wantsParking(t) || /gara[zż]|bus\w*\s+si[eę]\s+zmie|wysoko[sś][cć]\s+(pojazdu|auta|wjazdu)|[lł]adowar|\blpg\b/i.test(t),
+  };
+}

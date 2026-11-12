@@ -1,3 +1,6 @@
+import { findPlace, googlePlacesEnabled } from "../services/googlePlaces.js";
+import { parkingFromWebsite } from "../services/hotelWebsite.js";
+import { detailsTopic } from "../services/textParsing.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { config } from "../config.js";
@@ -8,6 +11,12 @@ import { brandLabel } from "../services/chains.js";
 const HotelDetailsInputSchema = z.object({
   hotel_id: z.number().int()
     .describe("hotel_id from booking_search_hotels or booking_find_hotel in this message"),
+  // (12.11) Google Places: telefon recepcji i strona WWW (kontakt) oraz parking ze strony hotelu.
+  // Pobierane tylko przy pytaniu o kontakt / parking (koszt zapytan Google).
+  question_about: z.string().max(40).optional()
+    .describe("'contact' for phone / e-mail / website / how to reach the hotel, 'parking' for parking questions, otherwise omit."),
+  user_request: z.string().max(2000).optional()
+    .describe("The user's request, verbatim - the server reads from it whether the question is about contact or parking."),
 });
 
 type HotelDetailsInput = z.infer<typeof HotelDetailsInputSchema>;
@@ -476,7 +485,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking. Contact: 'contact' is the trader (company operating the property) registered on Booking.com, not necessarily the hotel reception - always follow contact_note when you give it.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nAlways copy the user's request verbatim into user_request; for contact or parking questions also set question_about ('contact' / 'parking').\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking; then follow parking_from_website.note if present. Contact: hotel_contact (phone and website from Google) is the hotel's own contact - give it first; 'contact' is the trader (company operating the property) registered on Booking.com - follow contact_note.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -686,6 +695,39 @@ export function registerHotelDetailsTool(
           ? ((hotel.address.street ?? "") + " " + (hotel.address.city ?? "") + " " + (hotel.address.country ?? "")).trim()
           : (extractText(hotel.location?.address) ?? null);
 
+        // === GOOGLE PLACES (12.11, pomiar 22/22 hoteli z telefonem i strona) ===
+        // Tylko przy pytaniu o kontakt lub parking: telefon recepcji i strona z Google,
+        // a przy parkingu dodatkowo fragmenty ze strony hotelu (uzupelnienie danych Booking.com).
+        const topic = detailsTopic(params.question_about, params.user_request);
+        let googleContact: any = null;
+        let websiteParking: any = null;
+        if (topic.contact || topic.parking) {
+          const coords = hotel.location?.coordinates;
+          const place = googlePlacesEnabled()
+            ? await findPlace(name, address || "", { lat: coords?.latitude, lon: coords?.longitude })
+            : null;
+          if (place) {
+            googleContact = { phone: place.phone, website: place.website, google_maps: place.maps_url, google_name: place.name };
+          }
+          console.error("=== DIAG hotel_details " + params.hotel_id + ": temat " + JSON.stringify(topic) + ", Google: " +
+            (googlePlacesEnabled() ? (place ? "tel " + (place.phone ? "jest" : "brak") + ", www " + (place.website ? "jest" : "brak") : "nie znaleziono") : "wylaczony"));
+          if (topic.parking && place?.website) {
+            const w = await parkingFromWebsite(place.website);
+            websiteParking = !w.fetched
+              ? { status: "blocked", website: place.website,
+                  note: "The hotel website could not be read automatically (" + (w.error ?? "blocked") + "). Say so in one " +
+                    "sentence and give the website link for parking details." }
+              : w.parking_snippets.length === 0
+                ? { status: "not_found", website: place.website,
+                    note: "The hotel website has no parking information the server could find - do not mention it beyond the link." }
+                : { status: "found", website: place.website, snippets: w.parking_snippets,
+                    note: "Excerpts from the hotel's own website (may be outdated). After the Booking.com parking info, add ONE " +
+                      "short paragraph 'Według strony hotelu: …' with only NEW concrete facts from these excerpts (price, number of " +
+                      "spaces, garage, max vehicle height, buses/vans, EV charging, LPG, booking rules) in Polish, then the " +
+                      "website link. Ignore excerpts that are menus, reviews or marketing; never invent facts not in the excerpts." };
+          }
+        }
+
         const output: any = {
           hotel_id: params.hotel_id,
           name: name,
@@ -698,19 +740,27 @@ export function registerHotelDetailsTool(
           checkin_until: checkinTo,
           checkout_from: checkoutFrom,
           checkout_until: checkoutTo,
+          hotel_contact: googleContact ?? undefined,
+          hotel_contact_note: googleContact
+            ? "hotel_contact = the hotel's own phone and website from Google (public business listing) - give these FIRST " +
+              "as the hotel's contact ('Telefon do hotelu', 'Strona hotelu'). Add the Google Maps link only if asked where the hotel is."
+            : undefined,
           contact: contact,
           contact_note: contact
             ? "This phone/e-mail is the trader (company operating the property) as registered on Booking.com - it may " +
-              "lead to a management company or a sister hotel, not directly to this hotel's reception. When you give it, " +
-              "add one sentence saying so (e.g. 'Telefon i e-mail to dane firmy prowadzącej obiekt zgłoszone w Booking.com " +
-              "– mogą prowadzić do firmy zarządzającej, a nie bezpośrednio do recepcji hotelu.')."
-            : "Booking.com does not provide contact details for this property - say so and give the property page link.",
+              "lead to a management company or a sister hotel, not directly to this hotel's reception. " +
+              (googleContact ? "Give it only as additional info after hotel_contact, with one sentence saying so." :
+                "When you give it, add one sentence saying so (e.g. 'Telefon i e-mail to dane firmy prowadzącej obiekt " +
+                "zgłoszone w Booking.com – mogą prowadzić do firmy zarządzającej, a nie bezpośrednio do recepcji hotelu.').")
+            : googleContact ? undefined
+              : "Booking.com does not provide contact details for this property - say so and give the property page link.",
           description: description,
           important_information: importantInfo ?? null,
           facilities: facilities,
           parking_summary: parkingSummary,
           parking_kind: parkingKind(hotel.facility_details, facilities),
           parking_details: parkingDetails,
+          parking_from_website: websiteParking ?? undefined,
           wifi_details: wifiDetails,
           meal_prices: mealPrices,
           rooms: rooms,

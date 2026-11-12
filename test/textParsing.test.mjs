@@ -93,3 +93,13 @@ test("udogodnienia dla dzieci z tresci prosby (10.11 Damian - Trojmiasto)", () =
 test("druga nazwa miejsca z prosby (03.11 Weigla 5 / Szpital Wojskowy)", () => {
   assert.deepEqual(alternativeNamesFromRequest("hotel koło ul. Weigla 5, to jest 4 Szpital Wojskowy", "ul. Weigla 5"), ["4 Szpital Wojskowy"]);
 });
+
+import { detailsTopic } from "../dist/services/textParsing.js";
+
+test("temat pytania o hotel: kontakt / parking (12.11 Google Places)", () => {
+  assert.deepEqual(detailsTopic(undefined, "znajdź dane kontaktowe do hotelu Bedford Swan"), { contact: true, parking: false });
+  assert.deepEqual(detailsTopic(undefined, "podaj numer telefonu do recepcji Hampton Kraków"), { contact: true, parking: false });
+  assert.deepEqual(detailsTopic(undefined, "czy bus się zmieści na parkingu hotelu Diament?"), { contact: false, parking: true });
+  assert.deepEqual(detailsTopic("parking", "a co z autem?"), { contact: false, parking: true });
+  assert.deepEqual(detailsTopic(undefined, "o której jest zameldowanie w hotelu Moderno?"), { contact: false, parking: false });
+});
