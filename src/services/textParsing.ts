@@ -251,3 +251,30 @@ export function detailsTopic(questionAbout: unknown, userRequest: unknown): { co
     parking: /parking|park/.test(q) || wantsParking(t) || /gara[zż]|bus\w*\s+si[eę]\s+zmie|wysoko[sś][cć]\s+(pojazdu|auta|wjazdu)|[lł]adowar|\blpg\b/i.test(t),
   };
 }
+
+// === OBSZARY WIELU MIAST (12.11) ===
+export interface Region { label: string; centerName: string; lat: number; lon: number; radiusKm: number }
+const REGIONS: { re: RegExp; region: Region }[] = [
+  { re: /tr[oó]jmi[ae]st|tricity|tri-city/i,
+    region: { label: "Trójmiasto (Gdańsk, Sopot, Gdynia)", centerName: "Sopotu", lat: 54.4418, lon: 18.5601, radiusKm: 15 } },
+];
+export function regionFromText(text: string): Region | null {
+  if (!text) return null;
+  for (const r of REGIONS) if (r.re.test(text)) return r.region;
+  return null;
+}
+
+// === UDOGODNIENIA, PO KTORYCH SERWER NIE FILTRUJE (12.11, "bar na dachu") ===
+// Asystent nie przekazal ich jako filtra i sam wybral hotele "z wlasnej wiedzy" - serwer
+// rozpoznaje je w tresci prosby i kaze powiedziec wprost, ze nie filtruje.
+const UNSUPPORTED_AMENITIES: [RegExp, string][] = [
+  [/bar\w*\s+na\s+dachu|rooftop|roof\s*top|taras\w*\s+na\s+dachu|sky\s*bar/i, "bar / taras na dachu"],
+  [/widok\w*\s+na\s+(morze|g[oó]ry|jezioro|miasto|stare\s+miasto)|sea\s+view|view\s+of/i, "widok z pokoju"],
+  [/kasyn|casino/i, "kasyno"],
+  [/kort\w*\s+tenis|tennis/i, "kort tenisowy"],
+  [/pole\w*\s+golf|golf/i, "pole golfowe"],
+];
+export function unsupportedAmenitiesFromText(text: string): string[] {
+  if (!text) return [];
+  return UNSUPPORTED_AMENITIES.filter(([re]) => re.test(text)).map(([, label]) => label);
+}

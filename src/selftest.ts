@@ -206,6 +206,23 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "znajdz hotel: cale slowo w nazwie (Moderno, Poznan)",
+    tool: "booking_find_hotel",
+    args: () => ({ hotel_name: "Moderno", city: "Poznan", country: "pl" }),
+    check: (r) => (r.data?.status === "single_match" && /moderno/i.test(String(r.data?.hotel?.name ?? ""))
+      ? null : "status " + (r.data?.status ?? "?")),
+  },
+  {
+    name: "wyszukiwanie: Trojmiasto = Gdansk + Sopot + Gdynia",
+    tool: "booking_search_hotels",
+    args: (c) => ({ city: "Gdansk", country: "pl", checkin: c.checkin, checkout: c.checkout, user_request: "hotele w Trójmieście" }),
+    check: (r) => {
+      const h = hotels(r);
+      if (h.length === 0) return "brak hoteli";
+      return h.some((x) => typeof x.distance_km === "number") ? null : "szukanie po miescie zamiast obszaru";
+    },
+  },
+  {
     name: "znajdz hotel: miasto z nazwy (Faltom Gdynia -> Rumia)",
     tool: "booking_find_hotel",
     args: () => ({ hotel_name: "Hotel Spa Faltom Gdynia Rumia", city: "Gdynia", country: "pl" }),

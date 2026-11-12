@@ -103,3 +103,18 @@ test("temat pytania o hotel: kontakt / parking (12.11 Google Places)", () => {
   assert.deepEqual(detailsTopic("parking", "a co z autem?"), { contact: false, parking: true });
   assert.deepEqual(detailsTopic(undefined, "o której jest zameldowanie w hotelu Moderno?"), { contact: false, parking: false });
 });
+
+import { regionFromText, unsupportedAmenitiesFromText } from "../dist/services/textParsing.js";
+
+test("Trojmiasto jako jeden obszar (12.11)", () => {
+  const r = regionFromText("Znajdź hotele w Trójmieście na pobyt dla dwóch dorosłych z dzieckiem 11-13.12");
+  assert.ok(r && r.radiusKm === 15 && Math.abs(r.lat - 54.44) < 0.05);
+  assert.ok(regionFromText("hotele w Trojmiescie"));
+  assert.equal(regionFromText("hotele w Gdańsku 11-13.12"), null);
+});
+
+test("nieobslugiwane udogodnienia z tresci prosby (12.11 bar na dachu)", () => {
+  assert.deepEqual(unsupportedAmenitiesFromText("hotel z barem na dachu w Warszawie"), ["bar / taras na dachu"]);
+  assert.deepEqual(unsupportedAmenitiesFromText("hotel z widokiem na morze w Sopocie"), ["widok z pokoju"]);
+  assert.deepEqual(unsupportedAmenitiesFromText("hotele 4* w Warszawie z parkingiem"), []);
+});

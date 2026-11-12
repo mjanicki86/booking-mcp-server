@@ -715,8 +715,10 @@ export function registerHotelDetailsTool(
             const w = await parkingFromWebsite(place.website);
             websiteParking = !w.fetched
               ? { status: "blocked", website: place.website,
-                  note: "The hotel website could not be read automatically (" + (w.error ?? "blocked") + "). Say so in one " +
-                    "sentence and give the website link for parking details." }
+                  note: "The hotel website could not be read automatically (" + (w.error ?? "blocked") + "). After the " +
+                    "Booking.com parking info add exactly one separate sentence: 'Szczegółów parkingu nie udało się odczytać " +
+                    "ze strony hotelu – więcej informacji: <website>' with this website link. Do not connect it with " +
+                    "Booking.com data (never 'so Booking.com does not provide…')." }
               : w.parking_snippets.length === 0
                 ? { status: "not_found", website: place.website,
                     note: "The hotel website has no parking information the server could find - do not mention it beyond the link." }
@@ -726,6 +728,17 @@ export function registerHotelDetailsTool(
                       "spaces, garage, max vehicle height, buses/vans, EV charging, LPG, booking rules) in Polish, then the " +
                       "website link. Ignore excerpts that are menus, reviews or marketing; never invent facts not in the excerpts." };
           }
+        }
+
+        // (12.11, Hampton Krakow: "dodatkowy kontakt" = infolinia Hiltona w USA) - dane firmy z innego
+        // kraju niz hotel pomijamy, gdy jest telefon recepcji z Google.
+        const traderCountry = String(trader?.address?.country ?? "").toLowerCase();
+        const hotelCountry = String(hotel.location?.country ?? "").toLowerCase();
+        let contactOut = contact;
+        if (googleContact?.phone && contact && traderCountry && hotelCountry && traderCountry !== hotelCountry) {
+          console.error("=== DIAG hotel_details " + params.hotel_id + ": pomijam dane firmy z Booking.com (kraj " +
+            traderCountry + ", hotel " + hotelCountry + ") - jest telefon recepcji z Google.");
+          contactOut = null;
         }
 
         const output: any = {
@@ -745,8 +758,8 @@ export function registerHotelDetailsTool(
             ? "hotel_contact = the hotel's own phone and website from Google (public business listing) - give these FIRST " +
               "as the hotel's contact ('Telefon do hotelu', 'Strona hotelu'). Add the Google Maps link only if asked where the hotel is."
             : undefined,
-          contact: contact,
-          contact_note: contact
+          contact: contactOut,
+          contact_note: contactOut
             ? "This phone/e-mail is the trader (company operating the property) as registered on Booking.com - it may " +
               "lead to a management company or a sister hotel, not directly to this hotel's reception. " +
               (googleContact ? "Give it only as additional info after hotel_contact, with one sentence saying so." :

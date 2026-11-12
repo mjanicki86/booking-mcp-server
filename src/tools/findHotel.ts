@@ -461,6 +461,30 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               "if the user meant another one, they can give the address.",
           });
         }
+        // === CALE SLOWO W NAZWIE (12.11, test "hotel Moderno w Poznaniu" - 22 dopasowania, bo
+        // "Moderno" pasowalo tez do "Modern Studio...") === Jesli tylko jeden obiekt ma wszystkie
+        // slowa zapytania jako cale slowa w nazwie - wybieramy go bez pytania.
+        if (matchedEntries.length > 1) {
+          const qTokens = tokenizeQuery(searchName).filter((t) => !cityExclusions.has(t));
+          if (qTokens.length > 0) {
+            const whole = matchedEntries.filter((e) => e.names.some((n) => {
+              const words = new Set(tokenize(n));
+              return qTokens.every((t) => words.has(t));
+            }));
+            if (whole.length === 1) {
+              console.error("=== DIAG booking_find_hotel: tylko \"" + whole[0].name + "\" ma cale slowa [" + qTokens.join(", ") +
+                "] w nazwie - wybieram go z " + matchedEntries.length + " dopasowan.");
+              return reply({
+                status: "single_match",
+                hotel: toCandidate(whole[0], hint),
+                data_source: "Booking.com API",
+                note: "Only this property has the requested name as whole words. " + (matchedEntries.length - 1) +
+                  " other properties have similar names - if the user meant another one, they can give the address.",
+              });
+            }
+          }
+        }
+
         // Kolejnosc kandydatow: identyczna nazwa, potem hotele, potem reszta.
         const rank = (e: InventoryEntry): number =>
           (e.names.some((n) => exactNameKey(n) === exactKey) ? 0 : 2) +
