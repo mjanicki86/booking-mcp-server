@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, NEAR_PLACE_RE,
   OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, breakfastIntent, wantsParking, parseGuestsFromText,
-  normalizeFacilities, alternativeNamesFromRequest, kidsFacilitiesFromText,
+  normalizeFacilities, alternativeNamesFromRequest, kidsFacilitiesFromText, parseBookingUrl, bookingSlug,
 } from "../dist/services/textParsing.js";
 
 const types = (t) => requestedAccommodationTypes(t)?.labels ?? null;
@@ -117,4 +117,12 @@ test("nieobslugiwane udogodnienia z tresci prosby (12.11 bar na dachu)", () => {
   assert.deepEqual(unsupportedAmenitiesFromText("hotel z barem na dachu w Warszawie"), ["bar / taras na dachu"]);
   assert.deepEqual(unsupportedAmenitiesFromText("hotel z widokiem na morze w Sopocie"), ["widok z pokoju"]);
   assert.deepEqual(unsupportedAmenitiesFromText("hotele 4* w Warszawie z parkingiem"), []);
+});
+
+test("link Booking.com (12.11, Poleczki): slug, nazwa, kraj", () => {
+  const r = parseBookingUrl("zobacz https://www.booking.com/hotel/pl/poleczki-residence-apartments.pl.html?aid=123&checkin=2026-12-01");
+  assert.deepEqual(r, { slug: "poleczki-residence-apartments", name: "Poleczki Residence Apartments", country: "pl" });
+  assert.equal(bookingSlug("https://www.booking.com/hotel/pl/poleczki-residence-apartments.html"), "poleczki-residence-apartments");
+  assert.equal(bookingSlug("https://www.booking.com/hotel/gb/swan-bedford.en-gb.html"), "swan-bedford");
+  assert.equal(parseBookingUrl("Hotel Poleczki Warszawa"), null);
 });

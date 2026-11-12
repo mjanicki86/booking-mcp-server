@@ -213,6 +213,14 @@ const SCENARIOS: Scenario[] = [
       ? null : "status " + (r.data?.status ?? "?")),
   },
   {
+    name: "znajdz hotel: link Booking.com spoza API (Poleczki) -> not_found",
+    tool: "booking_find_hotel",
+    args: () => ({ hotel_name: "Poleczki Residence", city: "Warsaw", country: "pl",
+      booking_url: "https://www.booking.com/hotel/pl/poleczki-residence-apartments.pl.html" }),
+    check: (r) => (r.data?.status === "not_found" || r.data?.status === "single_match"
+      ? null : "status " + (r.data?.status ?? "?")),
+  },
+  {
     name: "wyszukiwanie: Trojmiasto = Gdansk + Sopot + Gdynia",
     tool: "booking_search_hotels",
     args: (c) => ({ city: "Gdansk", country: "pl", checkin: c.checkin, checkout: c.checkout, user_request: "hotele w Trójmieście" }),

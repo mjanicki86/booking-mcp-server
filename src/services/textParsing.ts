@@ -278,3 +278,20 @@ export function unsupportedAmenitiesFromText(text: string): string[] {
   if (!text) return [];
   return UNSUPPORTED_AMENITIES.filter(([re]) => re.test(text)).map(([, label]) => label);
 }
+
+// === LINK DO OBIEKTU NA BOOKING.COM (12.11, Poleczki) ===
+// https://www.booking.com/hotel/pl/poleczki-residence-apartments.pl.html?aid=... -> slug, nazwa, kraj
+export function bookingSlug(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m = /booking\.com\/hotel\/[a-z]{2}\/([a-z0-9-]+?)(?:\.[a-z]{2}(?:-[a-z]{2})?)?\.html/i.exec(url);
+  return m ? m[1].toLowerCase() : null;
+}
+
+export function parseBookingUrl(text: string): { slug: string; name: string; country: string } | null {
+  if (!text) return null;
+  const m = /booking\.com\/hotel\/([a-z]{2})\/([a-z0-9-]+?)(?:\.[a-z]{2}(?:-[a-z]{2})?)?\.html/i.exec(text);
+  if (!m) return null;
+  const slug = m[2].toLowerCase();
+  const name = slug.split("-").filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  return { slug, name, country: m[1].toLowerCase() };
+}

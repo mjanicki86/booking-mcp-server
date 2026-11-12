@@ -1,3 +1,4 @@
+import { parseBookingUrl, bookingSlug } from "../services/textParsing.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/cityResolver.js";
@@ -10,7 +11,7 @@ import { z } from "zod";
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 const FindHotelInputSchema = z.object({
-  hotel_name: z.string().min(2).max(200)
+  hotel_name: z.string().min(2).max(500)
     .describe("Hotel name to search for, e.g. \"ibis Amsterdam Centre\", \"Arche Hotel Geologiczna\". " +
       "Pass the name exactly as the user wrote it (Polish names are fine - Polish property names are " +
       "matched too)."),
@@ -27,9 +28,16 @@ const FindHotelInputSchema = z.object({
     .describe("Optional street name, address fragment, or neighbourhood the user mentioned (e.g. " +
       "'ul. Geologiczna 4', 'Hurtowa'). Used server-side to pick the right hotel when several names " +
       "match, and to rank partial matches. ALWAYS pass it when the user gave an address."),
+  // (12.11, Damian - Poleczki: user wkleil link, asystent nie wywolal narzedzia i sie wysypal)
+  booking_url: z.string().max(1000).optional()
+    .describe("Link to the property on booking.com pasted by the user (booking.com/hotel/...). Pass it whenever the " +
+      "user gives one - the server finds the property by the link. hotel_name may then be the name from the link."),
 });
 
 type FindHotelInput = z.infer<typeof FindHotelInputSchema>;
+
+// Ostatni brak obiektu per czat i nazwa (druga proba = odpowiedz jednoznaczna, 12.11).
+const lastNoMatch = new Map<string, number>();
 
 interface InventoryEntry {
   hotel_id: number;
@@ -331,6 +339,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "matching English and Polish property names. Dates are NOT needed. " +
         "Args: hotel_name, city (English), country (2-letter code), optional address_hint. " +
         "ADDRESS: if the user gave a street/address, ALWAYS pass it as address_hint. " +
+        "LINK: if the user pasted a booking.com/hotel/... link, ALWAYS pass it as booking_url (hotel_name may be the " +
+        "name from the link; city from the conversation - ask for the city only if unknown). " +
         "CITY: if the city is part of the hotel name or clear from the conversation (e.g. 'Bedford Swan' -> " +
         "Bedford, gb; 'ibis Gdansk Stare Miasto' -> Gdansk, pl), use it and work out the country code yourself - " +
         "do not ask the user. Ask only when the city is genuinely unclear, and then ask in plain words " +
@@ -360,6 +370,14 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
       },
     },
     async function handler(params: FindHotelInput): Promise<any> {
+      // === LINK DO BOOKING.COM (12.11) - nazwa i kraj z linku, potem dopasowanie po adresie strony ===
+      const urlInfo = parseBookingUrl(params.booking_url ?? "") ?? parseBookingUrl(params.hotel_name ?? "");
+      if (urlInfo) {
+        if (!params.hotel_name || /booking\.com|https?:/i.test(params.hotel_name)) params.hotel_name = urlInfo.name;
+        if (!params.country) params.country = urlInfo.country;
+        console.error("=== DIAG booking_find_hotel: link Booking.com -> slug \"" + urlInfo.slug + "\", nazwa \"" +
+          urlInfo.name + "\", kraj " + urlInfo.country + ".");
+      }
       // Zapamietaj hotel czatu przy jednoznacznym wyniku (dla booking_check_hotel_availability).
       const reply = (output: any) => {
         if (output?.status === "single_match" && output.hotel?.hotel_id) {
@@ -388,6 +406,16 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
 
       try {
         const inventory = await loadCityInventory(client, cityResult.city_id);
+
+        if (urlInfo) {
+          const bySlug = inventory.find((e) => bookingSlug(e.booking_url) === urlInfo.slug);
+          if (bySlug) {
+            console.error("=== DIAG booking_find_hotel: obiekt z linku znaleziony po adresie strony: " + bySlug.name + " (" + bySlug.hotel_id + ").");
+            return reply({ status: "single_match", hotel: toCandidate(bySlug, params.address_hint ?? ""),
+              data_source: "Booking.com API", note: "Found by the Booking.com link." });
+          }
+          console.error("=== DIAG booking_find_hotel: obiektu z linku (\"" + urlInfo.slug + "\") nie ma w liscie API miasta - szukam po nazwie.");
+        }
 
         if (inventory.length === 0) {
           return reply({
@@ -571,14 +599,15 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
               params.city + " (" + inventory.length + " properties checked, including apartments). " + "Not every property visible on the Booking.com website is available through the Booking.com API used by this assistant (often private apartments) - e.g. Poleczki Residence Apartments (id 7443140) is on the website but not in the API. " +
               "Suggested reply: the property was not found in the data Booking.com shares with the assistant; it may " +
               "be visible on the Booking.com website but unavailable here - worth checking it directly on Booking.com. " +
-              "No list of similarly named properties.",
+              "No list of similarly named properties. Do NOT ask for a link or a fuller name.",
             data_source: "Booking.com API",
           };
           if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
           return reply(output);
         }
 
-        if (partial.length > 0) {
+        // Z linkiem nie pokazujemy obiektow o podobnej nazwie - link wskazuje jeden konkretny obiekt.
+        if (partial.length > 0 && !urlInfo) {
           const output: any = {
             status: "partial_match",
             message: "No property exactly matches \"" + searchName + "\" in " + params.city +
@@ -592,12 +621,32 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
           return reply(output);
         }
 
-        const output: any = {
+        // (12.11, Poleczki) Brak obiektu: z adresem, z linkiem albo przy drugiej probie -> odpowiedz
+        // jednoznaczna (asystent prosil o pelna nazwe, potem o link i sie wysypal).
+        const noMatchKey = (ctx?.chatId ?? "") + "|" + normalizeText(searchName);
+        const secondTry = !!lastNoMatch.get(noMatchKey) && Date.now() - (lastNoMatch.get(noMatchKey) ?? 0) < 30 * 60 * 1000;
+        lastNoMatch.set(noMatchKey, Date.now());
+        if (lastNoMatch.size > 2000) { const k = lastNoMatch.keys().next().value; if (k !== undefined) lastNoMatch.delete(k); }
+        const definitive = !!hint || !!urlInfo || secondTry;
+        console.error("=== DIAG booking_find_hotel: brak \"" + searchName + "\" w " + params.city + " - " +
+          (definitive ? "odpowiedz jednoznaczna (" + (hint ? "adres" : urlInfo ? "link" : "druga proba") + ")" : "pierwsza proba bez adresu") + ".");
+        const output: any = definitive ? {
+          status: "not_found",
+          message: "No property \"" + searchName + "\"" + (hint ? " at \"" + hint + "\"" : "") + " in the Booking.com API " +
+            "property list for " + params.city + " (" + inventory.length + " properties checked, including apartments)" +
+            (urlInfo ? ", also not by the pasted Booking.com link" : "") + ". The property is not available in the data " +
+            "Booking.com shares with this assistant (often private apartments). Suggested reply: say plainly that this " +
+            "property is not available in the assistant's Booking.com data, so availability and prices cannot be checked " +
+            "here - check it directly on Booking.com" + (urlInfo ? " (the link the user pasted)" : "") + ". Do NOT ask " +
+            "for a link, a fuller name or the address again.",
+          data_source: "Booking.com API",
+        } : {
           status: "no_match",
           message: "No property matching \"" + searchName + "\" in the Booking.com API property list for " +
-            params.city + " (" + inventory.length + " properties checked, including apartments). This does not prove " +
-            "the property does not exist - it may be listed under a neighbouring town, or be visible on the Booking.com " +
-            "website but not available through the API used by this assistant (often private apartments).",
+            params.city + " (" + inventory.length + " properties checked, including apartments). It may be listed " +
+            "under a neighbouring town or not be available through the API used by this assistant (often private " +
+            "apartments). Suggested reply: say it was not found and ask ONCE for the street address (or the town) " +
+            "to double-check. Never ask for a Booking.com link.",
           data_source: "Booking.com API",
         };
         if (alternativeCitiesNote) output.alternative_cities_note = alternativeCitiesNote;
