@@ -255,7 +255,7 @@ export function detailsTopic(questionAbout: unknown, userRequest: unknown): { co
 // === OBSZARY WIELU MIAST (12.11) ===
 export interface Region { label: string; centerName: string; lat: number; lon: number; radiusKm: number }
 const REGIONS: { re: RegExp; region: Region }[] = [
-  { re: /tr[oó]jmi[ae]st|tricity|tri-city/i,
+  { re: /tr[oó]jmi[ae][sś]|tricity|tri-city/i,
     region: { label: "Trójmiasto (Gdańsk, Sopot, Gdynia)", centerName: "Sopotu", lat: 54.4418, lon: 18.5601, radiusKm: 15 } },
 ];
 export function regionFromText(text: string): Region | null {
