@@ -159,3 +159,14 @@ test("opis ceny i zdanie konczace liste (13.11)", () => {
   assert.equal(closingLine(18, 18, 10, false), "To już wszystkie wyniki (18).");
   assert.equal(closingLine(3, 3, 10, true), "Znaleziono 3 obiekty spełniające kryteria – to wszystkie wyniki.");
 });
+
+import { cityFromAddress } from "../dist/services/textParsing.js";
+test("miasto z adresu Google (13.11, sam link)", () => {
+  assert.equal(cityFromAddress("Galopu 7, 02-822 Warszawa, Polska"), "Warszawa");
+  assert.equal(cityFromAddress("Hagenbeckstraße 150, 22527 Hamburg, Niemcy"), "Hamburg");
+  assert.equal(cityFromAddress("Freyova 945/33, 190 00 Praha 9, Czechy"), "Praha");
+  assert.equal(cityFromAddress("Elizabetes iela 24, Centra rajons, Rīga, LV-1050, Łotwa"), "Rīga");
+  assert.equal(cityFromAddress("1 High St, Bedford MK40 1RW, Wielka Brytania"), "Bedford");
+  assert.equal(cityFromAddress("Wita Stwosza 37, 40-042 Katowice, Polska"), "Katowice");
+  assert.equal(cityFromAddress(""), null);
+});

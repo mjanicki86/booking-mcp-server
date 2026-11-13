@@ -256,6 +256,14 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "znajdz hotel: sam link, bez miasta i kraju (miasto z Google)",
+    tool: "booking_find_hotel",
+    args: () => ({ hotel_name: "Poleczki Residence Apartments",
+      booking_url: "https://www.booking.com/hotel/pl/poleczki-residence-apartments.pl.html" }),
+    check: (r) => (r.data?.status === "not_found" || r.data?.status === "single_match"
+      ? null : "status " + (r.data?.status ?? "?")),
+  },
+  {
     name: "znajdz hotel: bez kandydatow z samego 'Residence' (Poleczki)",
     tool: "booking_find_hotel",
     args: () => ({ hotel_name: "Poleczki Residence", city: "Warsaw", country: "pl" }),

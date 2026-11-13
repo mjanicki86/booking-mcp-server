@@ -348,3 +348,27 @@ export function closingLine(total: number, shownTo: number, pageSize: number, fi
   return firstBatch ? "Znaleziono " + matchingPhrase(total) + " – to wszystkie wyniki."
     : "To już wszystkie wyniki (" + total + ").";
 }
+
+// === MIASTO Z ADRESU GOOGLE (13.11, sam link do Booking.com) ===
+// "Galopu 7, 02-822 Warszawa, Polska" -> "Warszawa"; "Hagenbeckstraße 150, 22527 Hamburg, Niemcy" -> "Hamburg";
+// "Freyova 945/33, 190 00 Praha 9, Czechy" -> "Praha"; "Elizabetes iela 24, Rīga, LV-1050, Łotwa" -> "Rīga";
+// "1 High St, Bedford MK40 1RW, Wielka Brytania" -> "Bedford".
+export function cityFromAddress(address: string): string | null {
+  if (!address) return null;
+  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  const clean = (c: string) => c.replace(/\s+\d+$/, "").trim() || null;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    let m = /^(?:[A-Z]{1,3}-)?\d{2}-\d{3}\s+(.+)$/.exec(p)          // PL 02-822 Warszawa
+      ?? /^(?:[A-Z]{1,3}-)?\d{3}\s?\d{2}\s+(.+)$/.exec(p)           // CZ/SK 190 00 Praha
+      ?? /^(?:[A-Z]{1,3}-)?\d{4,5}\s+(.+)$/.exec(p);                // DE/FR/NL 22527 Hamburg
+    if (m) return clean(m[1]);
+    m = /^(.+?)\s+[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/.exec(p);      // UK Bedford MK40 1RW
+    if (m) return clean(m[1]);
+    if (/^[A-Z]{2}-\d{3,5}$/.test(p) && i > 0) return clean(parts[i - 1]); // LV-1050 po miescie
+  }
+  // bez kodu pocztowego: przedostatni fragment (ostatni to kraj), jesli bez cyfr
+  const cand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  return /\d/.test(cand) ? null : cand;
+}

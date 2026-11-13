@@ -1,4 +1,5 @@
-import { parseBookingUrl, bookingSlug } from "../services/textParsing.js";
+import { parseBookingUrl, bookingSlug, cityFromAddress } from "../services/textParsing.js";
+import { findPlace, googlePlacesEnabled } from "../services/googlePlaces.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { resolveCityId, searchCities, cityNotFoundMessage } from "../services/cityResolver.js";
@@ -15,10 +16,12 @@ const FindHotelInputSchema = z.object({
     .describe("Hotel name to search for, e.g. \"ibis Amsterdam Centre\", \"Arche Hotel Geologiczna\". " +
       "Pass the name exactly as the user wrote it (Polish names are fine - Polish property names are " +
       "matched too)."),
-  city: z.string().min(2).max(100)
-    .describe('City where the hotel is located, IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate the city name to English before calling.'),
-  country: z.string().min(2).max(2)
-    .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for a code.'),
+  // (13.11, Damian: sam link bez tekstu -> Copilot pytal o kraj surowymi polami) - miasto i kraj
+  // niewymagane, gdy jest booking_url: kraj z linku, miasto z Google Places.
+  city: z.string().min(2).max(100).optional()
+    .describe('City where the hotel is located, IN ENGLISH, e.g. "Warsaw" (not "Warszawa"), "Amsterdam", "Rome" (not "Roma"). Always translate the city name to English before calling. Not needed when booking_url is given and the user did not name a city.'),
+  country: z.string().min(2).max(2).optional()
+    .describe('Two-letter lowercase country code of the city, e.g. "pl", "nl". Work it out yourself from the city or country name (England/UK -> gb, Germany -> de); never ask the user for it. Not needed with booking_url.'),
   checkin: z.string().regex(dateRegex).optional()
     .describe("OPTIONAL and NOT required. Hotel lookup by name no longer depends on dates or availability. " +
       "Accepted only for backward compatibility; dates matter only for booking_search_hotels."),
@@ -367,7 +370,8 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         "Args: hotel_name, city (English), country (2-letter code), optional address_hint. " +
         "ADDRESS: if the user gave a street/address, ALWAYS pass it as address_hint. " +
         "LINK: if the user pasted a booking.com/hotel/... link, ALWAYS pass it as booking_url (hotel_name may be the " +
-        "name from the link; city from the conversation - ask for the city only if unknown). " +
+        "name from the link). If the message is only a link, call with booking_url and hotel_name only - do NOT ask " +
+        "for the city or country first; the server finds them. After a single_match from a bare link, ask what to check. " +
         "CITY: if the city is part of the hotel name or clear from the conversation (e.g. 'Bedford Swan' -> " +
         "Bedford, gb; 'ibis Gdansk Stare Miasto' -> Gdansk, pl), use it and work out the country code yourself - " +
         "do not ask the user. Ask only when the city is genuinely unclear, and then ask in plain words " +
@@ -396,12 +400,12 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         openWorldHint: true,
       },
     },
-    async function handler(params: FindHotelInput): Promise<any> {
+    async function handler(input: FindHotelInput): Promise<any> {
       // === LINK DO BOOKING.COM (12.11) - nazwa i kraj z linku, potem dopasowanie po adresie strony ===
-      const urlInfo = parseBookingUrl(params.booking_url ?? "") ?? parseBookingUrl(params.hotel_name ?? "");
+      const urlInfo = parseBookingUrl(input.booking_url ?? "") ?? parseBookingUrl(input.hotel_name ?? "");
       if (urlInfo) {
-        if (!params.hotel_name || /booking\.com|https?:/i.test(params.hotel_name)) params.hotel_name = urlInfo.name;
-        if (!params.country) params.country = urlInfo.country;
+        if (!input.hotel_name || /booking\.com|https?:/i.test(input.hotel_name)) input.hotel_name = urlInfo.name;
+        if (!input.country) input.country = urlInfo.country;
         console.error("=== DIAG booking_find_hotel: link Booking.com -> slug \"" + urlInfo.slug + "\", nazwa \"" +
           urlInfo.name + "\", kraj " + urlInfo.country + ".");
       }
@@ -413,6 +417,33 @@ export function registerFindHotelTool(server: McpServer, client: BookingApiClien
         }
         return replyBase(output);
       };
+
+      // === MIASTO DLA SAMEGO LINKU (13.11) - Google Places po nazwie z linku, miasto z adresu ===
+      if (!input.city && urlInfo && googlePlacesEnabled()) {
+        let countryName = "";
+        try { countryName = new (Intl as any).DisplayNames(["en"], { type: "region" }).of((input.country ?? urlInfo.country).toUpperCase()) ?? ""; } catch { /* zostaje pusty */ }
+        const place = await findPlace(urlInfo.name, countryName);
+        const fromGoogle = place?.address ? cityFromAddress(place.address) : null;
+        console.error("=== DIAG booking_find_hotel: sam link, miasto z Google: " +
+          (place ? "\"" + place.name + "\", adres \"" + (place.address ?? "-") + "\" -> " + (fromGoogle ?? "nie odczytano") : "nie znaleziono w Google") + ".");
+        if (fromGoogle) input.city = fromGoogle;
+      }
+      if (!input.city) {
+        return replyBase({
+          status: "need_city",
+          message: "The city of this property is needed to look it up. Suggested reply: one plain question in Polish " +
+            "asking in which city the property is (e.g. 'W jakim mieście jest ten obiekt?'). Do not ask for the country " +
+            "or a country code. Then call again with the same booking_url plus city.",
+        });
+      }
+      if (!input.country) {
+        return replyBase({
+          status: "need_country_code",
+          message: "Work out the two-letter country code of " + input.city + " yourself and call again with country. " +
+            "Never ask the user for it.",
+        });
+      }
+      const params = input as FindHotelInput & { city: string; country: string };
       const started = Date.now();
       const cityResult = await resolveCityId(client, params.city, params.country, ctx?.chatId ?? "");
 
