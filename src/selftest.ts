@@ -25,6 +25,7 @@ interface Ctx {
   ddmm: string;            // "15-16.12" do tekstu prosby
   hotelId?: number;
   firstBatchTotal?: number;
+  list?: { hotel_id: number; name: string }[];  // (13.11) lista do pytan o hotel z rozmowy
 }
 
 function hotels(r: Result): any[] {
@@ -213,6 +214,46 @@ const SCENARIOS: Scenario[] = [
       if (r.isError) return "blad: " + r.text.slice(0, 150);
       if (r.data?.hotel_id !== c.hotelId) return "inny hotel: " + r.data?.hotel_id;
       return r.data?.results?.[0]?.checkin === c.checkin ? null : "daty nie z rozmowy";
+    },
+  },
+  // === (13.11) HOTEL Z ROZMOWY: numer z listy, nazwa z rozmowy, "w poblizu tego hotelu" ===
+  {
+    name: "rozmowa: lista hoteli w Gdansku (do pytan o hotel z listy)",
+    tool: "booking_search_hotels",
+    args: (c) => ({ city: "Gdansk", country: "pl", checkin: c.checkin, checkout: c.checkout, user_request: "hotele w Gdańsku" }),
+    check: (r, c) => {
+      const h = hotels(r);
+      if (h.length < 3) return "za malo hoteli: " + h.length;
+      c.list = h.map((x) => ({ hotel_id: x.hotel_id, name: x.name }));
+      return null;
+    },
+  },
+  {
+    name: "rozmowa: szczegoly hotelu nr 3 z listy ('czy trzeci ma parking?')",
+    tool: "booking_get_hotel_details",
+    args: (c) => (c.list ? { position: 3, question_about: "parking", user_request: "czy trzeci ma parking?" } : null),
+    check: (r, c) => (r.data?.hotel_id === c.list?.[2]?.hotel_id ? null : "inny hotel: " + (r.data?.hotel_id ?? r.data?.status ?? "?")),
+  },
+  {
+    name: "rozmowa: dostepnosc hotelu z listy po nazwie",
+    tool: "booking_check_hotel_availability",
+    args: (c) => (c.list ? { hotel_name: c.list[0].name, checkin: c.checkin, checkout: c.checkout, user_request: "a ten pierwszy ma wolne pokoje?" } : null),
+    check: (r, c) => {
+      if (r.data?.hotel_id === c.list?.[0]?.hotel_id) return null;
+      // dwa hotele o podobnej nazwie na liscie - pytanie, ktory, tez jest poprawne
+      return r.data?.status === "ambiguous_name" ? null : "inny hotel: " + (r.data?.hotel_id ?? r.data?.status ?? "?");
+    },
+  },
+  {
+    name: "rozmowa: hotele w poblizu ostatniego hotelu (bez niego samego)",
+    tool: "booking_search_hotels",
+    args: (c) => (c.list ? { city: "Gdansk", country: "pl", checkin: c.checkin, checkout: c.checkout, near_hotel: "last",
+      user_request: "ten jest pełny, znajdź coś w pobliżu" } : null),
+    check: (r) => {
+      const h = hotels(r);
+      if (h.length === 0) return "brak hoteli (" + (r.data?.status ?? r.text.slice(0, 100)) + ")";
+      if (!h.some((x) => typeof x.distance_km === "number")) return "brak odleglosci - nie szukal wokol hotelu";
+      return null;
     },
   },
   {

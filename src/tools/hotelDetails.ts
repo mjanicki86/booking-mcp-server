@@ -8,7 +8,7 @@ import { sanitizeForOrchestrator } from "../utils/sanitizeForOrchestrator.js";
 import { LOG_DEBUG } from "../services/bookingClient.js";
 import { brandLabel } from "../services/chains.js";
 import { RequestContext } from "../services/requestContext.js";
-import { rememberChatHotel, recentChatHotel } from "../services/chatHotel.js";
+import { resolveConversationHotel, rememberConversationHotel, hotelSourceNote } from "../services/conversationHotel.js";
 
 const HotelDetailsInputSchema = z.object({
   // (13.11, Damian: "a jak tam z parkingiem?" po kontakcie do Mercure -> agent nie mial id, Copilot sie poddal)
@@ -16,6 +16,11 @@ const HotelDetailsInputSchema = z.object({
     .describe("hotel_id from booking_search_hotels or booking_find_hotel in this message. OMIT it for a follow-up " +
       "question about the hotel discussed just before ('a parking?', 'a jak z parkingiem?', 'a śniadanie?') - the " +
       "server then uses the last hotel of this conversation."),
+  // (13.11) hotel z listy / z rozmowy bez hotel_id
+  position: z.number().int().min(1).max(500).optional()
+    .describe("Number of the hotel on the last list shown in this conversation ('trzeci' -> 3, 'nr 14' -> 14). Use instead of hotel_id."),
+  hotel_name: z.string().min(2).max(200).optional()
+    .describe("Name (or part of it) of a hotel already shown or discussed in this conversation ('a Hilton?'). Use instead of hotel_id; the server matches it against hotels of this conversation."),
   // (12.11) Google Places: telefon recepcji i strona WWW (kontakt) oraz parking ze strony hotelu.
   // Pobierane tylko przy pytaniu o kontakt / parking (koszt zapytan Google).
   question_about: z.string().max(40).optional()
@@ -491,7 +496,7 @@ export function registerHotelDetailsTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you. FOLLOW-UP about the hotel discussed just before ('a jak tam z parkingiem?', 'a śniadanie?', 'a zwierzęta?'): call this tool WITHOUT hotel_id (with user_request and question_about) - the server uses the last hotel of this conversation. If the user names a different hotel, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nAlways copy the user's request verbatim into user_request; for contact or parking questions also set question_about ('contact' / 'parking').\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking; then follow parking_from_website.note if present. Contact: hotel_contact (phone and website from Google) is the hotel's own contact - give it first; 'contact' is the trader (company operating the property) registered on Booking.com - follow contact_note.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you. FOLLOW-UPS (no hotel_id needed): about the hotel discussed just before ('a jak tam z parkingiem?', 'a śniadanie?') - call WITHOUT hotel_id; a hotel by its number on the last list ('czy trzeci ma basen?') - position; a hotel already shown in this conversation by name ('a Hilton?') - hotel_name. Always with user_request (and question_about). Only for a hotel not shown in this conversation call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nAlways copy the user's request verbatim into user_request; for contact or parking questions also set question_about ('contact' / 'parking').\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking; then follow parking_from_website.note if present. Contact: hotel_contact (phone and website from Google) is the hotel's own contact - give it first; 'contact' is the trader (company operating the property) registered on Booking.com - follow contact_note.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -501,22 +506,17 @@ export function registerHotelDetailsTool(
       },
     },
     async (params: HotelDetailsInput) => {
-      // (13.11) Bez hotel_id - ostatni hotel tej rozmowy (find_hotel / poprzednie szczegoly).
-      let hotelId: number;
-      if (params.hotel_id != null) {
-        hotelId = params.hotel_id;
-      } else {
-        const recent = recentChatHotel(ctx?.chatId ?? "");
-        if (!recent) {
-          console.error("=== DIAG hotel_details: brak hotel_id i brak hotelu w tej rozmowie - pytam o hotel.");
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ status: "need_hotel",
-              message: "No hotel was discussed in this conversation yet. Suggested reply: one plain question in Polish " +
-                "about which hotel (name and city) the user means; then call booking_find_hotel." }) }],
-          };
-        }
-        hotelId = recent.id;
-        console.error("=== DIAG hotel_details: brak hotel_id - ostatni hotel rozmowy: " + (recent.name ?? "?") + " (" + recent.id + ").");
+      // (13.11) Hotel: hotel_id > numer z listy > nazwa z rozmowy > ostatni hotel rozmowy.
+      const scope = ctx?.chatId ?? "";
+      const ref = resolveConversationHotel(scope, params);
+      if (!ref.ok) {
+        console.error("=== DIAG hotel_details: hotel z rozmowy - " + ref.status + ".");
+        const out = { status: ref.status, message: ref.message, candidates: ref.candidates };
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
+      }
+      const hotelId: number = ref.id;
+      if (ref.source !== "agent") {
+        console.error("=== DIAG hotel_details: hotel z rozmowy (" + ref.source + "): " + (ref.name ?? "?") + " (" + hotelId + ").");
       }
       try {
         const endpoint = "/accommodations/details";
@@ -765,8 +765,9 @@ export function registerHotelDetailsTool(
         }
 
         // (13.11) ten hotel = "ostatni hotel rozmowy" dla pytan uzupelniajacych ("a parking?")
-        rememberChatHotel(ctx?.chatId ?? "", hotelId, typeof name === "string" ? name : null);
+        rememberConversationHotel(scope, hotelId, typeof name === "string" ? name : null);
         const output: any = {
+          hotel_source_note: hotelSourceNote(ref.source, typeof name === "string" ? name : ref.name),
           hotel_id: hotelId,
           name: name,
           brand: await brandLabel(hotel.brands),

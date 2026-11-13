@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { BookingApiClient } from "../services/bookingClient.js";
 import { RequestContext } from "../services/requestContext.js";
-import { rememberChatHotel, recentChatHotel } from "../services/chatHotel.js";
+import { resolveConversationHotel, rememberConversationHotel, hotelSourceNote } from "../services/conversationHotel.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM } from "../constants.js";
 import { resolveStay, childAgesQuestion } from "../services/stayContext.js";
 
@@ -17,6 +17,11 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 const InputSchema = z.object({
   hotel_id: z.number().int().positive().optional()
     .describe("hotel_id from booking_find_hotel in this message. Omit in a follow-up about the same hotel ('a w styczniu?') - the server remembers the hotel of this conversation."),
+  // (13.11) hotel z listy / z rozmowy bez hotel_id
+  position: z.number().int().min(1).max(500).optional()
+    .describe("Number of the hotel on the last list shown in this conversation ('czy pierwszy ma wolne pokoje?' -> 1). Use instead of hotel_id."),
+  hotel_name: z.string().min(2).max(200).optional()
+    .describe("Name (or part of it) of a hotel already shown or discussed in this conversation ('a Radisson?'). Use instead of hotel_id."),
   checkin: z.string().regex(dateRegex).optional()
     .describe("Check-in YYYY-MM-DD, when the user gave exact dates."),
   checkout: z.string().regex(dateRegex).optional()
@@ -145,6 +150,9 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
         "Report each checked date: available with price (total for the stay) or no free rooms. If no date is " +
         "available, follow note exactly: offers_in_api false = Booking.com does not share this hotel's offers with the " +
         "assistant (give booking_url); otherwise the dates are sold out. Never say the hotel is closed or seasonal. " +
+        "FOLLOW-UPS (no hotel_id needed): the hotel discussed just before - omit hotel_id; a hotel by its number on the " +
+        "last list ('czy pierwszy ma wolne pokoje?') - position; a hotel already shown in this conversation by name - " +
+        "hotel_name. Start the answer with the hotel name. " +
         "Always copy the user's request verbatim into user_request and pass children_ages when children travel " +
         "(the server keeps guests and dates of this conversation).",
       inputSchema: InputSchema.shape,
@@ -152,21 +160,16 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
     },
     async (params: Input) => {
       const started = Date.now();
-      let id = params.hotel_id;
-      let name: string | null = null;
-      const remembered = recentChatHotel(scope);
-      if (!id && remembered) {
-        id = remembered.id;
-        name = remembered.name;
-        console.error("=== DIAG dostepnosc: hotel z wczesniejszej wiadomosci w tym czacie: " + id + " (" + (name ?? "?") + ").");
-      } else if (id && remembered && remembered.id === id) {
-        name = remembered.name;
+      // (13.11) Hotel: hotel_id > numer z listy > nazwa z rozmowy > ostatni hotel rozmowy.
+      const ref = resolveConversationHotel(scope, params);
+      if (!ref.ok) {
+        console.error("=== DIAG dostepnosc: hotel z rozmowy - " + ref.status + ".");
+        return { content: [{ type: "text", text: JSON.stringify({ status: ref.status, message: ref.message, candidates: ref.candidates }) }] };
       }
-      if (!id) {
-        return {
-          content: [{ type: "text", text: "No hotel_id. Call booking_find_hotel first (hotel name + city), then call this tool with the returned hotel_id." }],
-          isError: true,
-        };
+      const id: number = ref.id;
+      const name: string | null = ref.name;
+      if (ref.source !== "agent") {
+        console.error("=== DIAG dostepnosc: hotel z rozmowy (" + ref.source + "): " + id + " (" + (name ?? "?") + ").");
       }
 
       // Miesiac / najblizszy wolny termin maja pierwszenstwo - wtedy daty z tresci prosby i rozmowy
@@ -205,7 +208,7 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
       }
 
       const results = await Promise.all(dates.map((d) => checkOne(client, id!, params, guests, d.checkin, d.checkout)));
-      rememberChatHotel(scope, id, name);
+      rememberConversationHotel(scope, id, name);
       const availableCount = results.filter((r) => r.available).length;
       const firstAvailable = results.find((r) => r.available) ?? null;
       console.error("=== DIAG dostepnosc: hotel " + id + ", tryb " + mode + ", " + dates.length + " terminow, wolne: " +
@@ -259,6 +262,7 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
           (mode === "month" ? " Say these are sample dates in the month (1 night each)." : "");
       }
       const out: any = {
+        hotel_source_note: hotelSourceNote(ref.source, name),
         hotel_id: id,
         hotel_name: name,
         mode,
