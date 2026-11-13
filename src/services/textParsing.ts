@@ -299,3 +299,52 @@ export function parseBookingUrl(text: string): { slug: string; name: string; cou
   const name = slug.split("-").filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
   return { slug, name, country: m[1].toLowerCase() };
 }
+
+// === LICZBA HOTELI Z PROSBY (13.11, "hotel z barem na dachu" - agent sam wyslal results_limit 5) ===
+// true = uzytkownik prosi o konkretna (lub "kilka") liczbe wynikow - wtedy limit od agenta zostaje.
+const COUNT_WORDS = "jeden|jedn[aąe]|dwa|dwie|trzy|cztery|pi[eę][cć]|sze[sś][cć]|siedem|osiem|dziewi[eę][cć]|dziesi[eę][cć]|kilka|par[eęa]|one|two|three|four|five|six|seven|eight|nine|ten|few|couple";
+const COUNT_NOUNS = "najlepsz|hotel|obiekt|propozycj|opcj|wynik|pierwsz|najta[nń]sz|polecan|miejsc|nocleg|apartament|hostel|pensjonat|best|option|result|cheapest|top|recommend";
+const LIMIT_RE = new RegExp(
+  "(?<![\\d.,:/\\-])\\b(\\d{1,2}|" + COUNT_WORDS + ")\\s+(?:\\S+\\s+)?(?:" + COUNT_NOUNS + ")" +
+  "|\\btop\\s*-?\\s*\\d{1,2}\\b" +
+  "|\\b(?:poka[zż]|podaj|daj|wymie[nń]|wybierz|show|give|list)\\w*\\s+(?:mi\\s+)?(?:\\d{1,2}|" + COUNT_WORDS + ")\\b", "i");
+export function userAskedForCount(text: string): boolean {
+  if (!text) return false;
+  return LIMIT_RE.test(text);
+}
+
+// === OPIS CENY (13.11) - "1198,76 PLN" bez "za 2 noce" wygladalo na cene za noc ===
+function plNumber(n: number): string {
+  return (Math.round(n * 100) / 100).toFixed(2).replace(".", ",").replace(/,00$/, "");
+}
+export function nightsWord(n: number): string {
+  if (n === 1) return "noc";
+  const last = n % 10, last2 = n % 100;
+  return last >= 2 && last <= 4 && !(last2 >= 12 && last2 <= 14) ? "noce" : "nocy";
+}
+export function priceLabel(total: number | null | undefined, nights: number, currency: string): string | null {
+  if (total == null || !isFinite(total) || !(nights >= 1)) return null;
+  const base = plNumber(total) + " " + currency + " za " + nights + " " + nightsWord(nights);
+  return nights > 1 ? base + " (" + plNumber(total / nights) + " " + currency + "/noc)" : base;
+}
+
+// Odmiana "obiekt" do zdania na koniec listy.
+export function objectsWord(n: number): string {
+  if (n === 1) return "obiekt";
+  const last = n % 10, last2 = n % 100;
+  return last >= 2 && last <= 4 && !(last2 >= 12 && last2 <= 14) ? "obiekty" : "obiektów";
+}
+function matchingPhrase(n: number): string {
+  const w = objectsWord(n);
+  return n + " " + w + " " + (w === "obiekt" ? "spełniający" : w === "obiekty" ? "spełniające" : "spełniających") + " kryteria";
+}
+export function closingLine(total: number, shownTo: number, pageSize: number, firstBatch: boolean): string {
+  const remaining = total - shownTo;
+  if (remaining > 0) {
+    const next = Math.min(pageSize, remaining);
+    return (firstBatch ? "Znaleziono " + matchingPhrase(total) :
+      "Pozostało jeszcze " + remaining + " z " + total) + " – napisz „dalej”, aby zobaczyć kolejne " + next + ".";
+  }
+  return firstBatch ? "Znaleziono " + matchingPhrase(total) + " – to wszystkie wyniki."
+    : "To już wszystkie wyniki (" + total + ").";
+}

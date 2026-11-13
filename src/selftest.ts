@@ -227,11 +227,22 @@ const SCENARIOS: Scenario[] = [
     check: (r) => {
       const h = hotels(r);
       if (h.length === 0) return "brak hoteli";
-      if (!h.some((x) => typeof x.distance_km === "number")) return "szukanie po miescie zamiast obszaru";
+      // (13.11) przy obszarze bez odleglosci; obszar rozpoznany = location_note o calym obszarze
+      if (!/whole area/i.test(String(r.data?.location_note ?? ""))) return "szukanie po miescie zamiast obszaru";
+      if (h.some((x) => typeof x.distance_km === "number")) return "odleglosc przy obszarze";
+      if (!/za \d+ noc/.test(String(h[0]?.price_label ?? ""))) return "brak price_label";
+      if (!String(r.data?.closing_line ?? "").includes("Znaleziono")) return "brak closing_line";
       // (13.11) w pierwszej paczce co najmniej 2 miasta i nazwa miasta przy hotelu
       const cities = new Set(h.map((x) => x.city).filter((c) => !!c));
       return cities.size >= 2 ? null : "w paczce miasta: " + (Array.from(cities).join(", ") || "brak pola city");
     },
+  },
+  {
+    name: "wyszukiwanie: limit od agenta bez prosby o liczbe -> paczka 10",
+    tool: "booking_search_hotels",
+    args: (c) => ({ city: "Warsaw", country: "pl", checkin: c.checkin, checkout: c.checkout, results_limit: 5,
+      user_request: "hotele w Warszawie" }),
+    check: (r) => (hotels(r).length > 5 ? null : "tylko " + hotels(r).length + " hoteli (limit agenta zastosowany)"),
   },
   {
     name: "wyszukiwanie: aglomeracja slaska (kilka miast)",

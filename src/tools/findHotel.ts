@@ -292,7 +292,20 @@ function partialMatch(hotelName: string, searchName: string, cityExclusions: Set
   const searchTokens = meaningful.length > 0 ? meaningful : rawSearchTokens.filter((t) => !cityExclusions.has(t));
   const effectiveTokens = searchTokens.length > 0 ? searchTokens : rawSearchTokens;
   if (effectiveTokens.length === 0 || hotelTokens.length === 0) return false;
-  return effectiveTokens.some((st) => hotelTokens.some((ht) => tokensMatch(ht, st)));
+  return effectiveTokens.some((st) => hotelTokens.some((ht) => partialTokensMatch(ht, st)));
+}
+
+// (13.11) "Poleczki" pasowalo do "Pole" (Pole Mokotowskie) - przy kandydatach z czesci nazwy
+// krotsze slowo jako fragment dluzszego tylko przy >= 5 literach i >= 60% dlugosci dluzszego.
+// Rdzen slowa (stemsMatch: "Warszawa"/"Warszawie") bez zmian. Pelne dopasowanie (isMatch) bez zmian.
+function partialTokensMatch(hotelToken: string, searchToken: string): boolean {
+  if (hotelToken === searchToken) return true;
+  const shorter = hotelToken.length <= searchToken.length ? hotelToken : searchToken;
+  const longer = shorter === hotelToken ? searchToken : hotelToken;
+  if (shorter.length >= 5 && shorter.length >= 0.6 * longer.length && longer.indexOf(shorter) !== -1) return true;
+  // rdzen 5 liter (nie 4 jak w pelnym dopasowaniu - "pole" vs "poleczki")
+  return hotelToken.length >= 5 && searchToken.length >= 5 && hotelToken.slice(0, 5) === searchToken.slice(0, 5) &&
+    stemsMatch(hotelToken, searchToken);
 }
 
 // Liczba trafionych tokenow - do sortowania czesciowych dopasowan
@@ -300,7 +313,7 @@ function partialMatch(hotelName: string, searchName: string, cityExclusions: Set
 function partialScore(hotelName: string, searchName: string, cityExclusions: Set<string>): number {
   const hotelTokens = tokenize(hotelName);
   const searchTokens = tokenizeQuery(searchName).filter((t) => !cityExclusions.has(t));
-  return searchTokens.filter((st) => hotelTokens.some((ht) => tokensMatch(ht, st))).length;
+  return searchTokens.filter((st) => hotelTokens.some((ht) => partialTokensMatch(ht, st))).length;
 }
 
 function addressMatches(hotelAddress: string | null, addressHint: string): boolean {

@@ -108,6 +108,7 @@ export interface FormattedHotel {
   property_type: string | null;
   booking_url: string | null;
   city?: string | null;
+  price_label?: string | null;
 }
 export interface HotelSearchOutput {
   [key: string]: unknown;

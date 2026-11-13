@@ -11,7 +11,7 @@ import {
 import { fetchParkingSummaries } from "./hotelDetails.js";
 import { RequestContext } from "../services/requestContext.js";
 import { normalizeText } from "../services/textNormalize.js";
-import { ALLOWED_HOTEL_ACCOMMODATION_TYPES, NEAR_PLACE_RE, OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, STREET_PREFIX_RE, alternativeNamesFromRequest, breakfastIntent, wantsParking, normalizeFacilities, kidsFacilitiesFromText, regionFromText, unsupportedAmenitiesFromText } from "../services/textParsing.js";
+import { ALLOWED_HOTEL_ACCOMMODATION_TYPES, NEAR_PLACE_RE, OTHER_ACCOMMODATION_RE, NEGATED_TYPE_RE, requestedAccommodationTypes, parseUserDistanceKm, isNextBatchRequest, STREET_PREFIX_RE, alternativeNamesFromRequest, breakfastIntent, wantsParking, normalizeFacilities, kidsFacilitiesFromText, regionFromText, unsupportedAmenitiesFromText, userAskedForCount, priceLabel, closingLine } from "../services/textParsing.js";
 import { resolveStay, childAgesQuestion } from "../services/stayContext.js";
 import { brandIdsForChain, brandLabel } from "../services/chains.js";
 import { rememberSearchBatch } from "../services/shownHotels.js";
@@ -403,6 +403,8 @@ function serveNextBatch(key: string, entry: StoredResultSet, how: string): any {
       (remaining > 0
         ? "After the list: " + remaining + " more remain ('dalej')."
         : "After the list: these were the last results of this search (all " + total + " shown)."),
+    closing_line: closingLine(total, to, entry.page_size, false),
+    closing_line_instruction: "End the reply with closing_line, word for word, as the last sentence.",
   };
   return {
     content: [{ type: "text", text: JSON.stringify(out) + "\n\n---\nSource: Booking.com API" }],
@@ -514,7 +516,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
     "booking_search_hotels",
     {
       title: "Search Hotels on Booking.com",
-      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If the user names several areas at once ('centrum i Wola', 'Mokotów albo Ochota'), search the whole city (city + country, without landmark_name) or ask which area they prefer - do not pick one of them. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices are then for offers with breakfast included (hotels without such an offer are left out). Without it prices are for the cheapest offer.\n- property types: the server reads them from user_request ('tylko hostele', 'apartament', 'pensjonat lub B&B') and shows only those types - never present other types as matching. exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- chain or brand ('hotele Marriott', 'tylko ibis', 'Hiltony') -> chain; never pick chain hotels from the list by their names yourself. Each hotel has 'brand' (e.g. 'Novotel (Accor)') - questions which chain a hotel belongs to are answered from it, not from Weco documents.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. 'dziś'/'today'/'jutro'/'tomorrow' = 1 night; the server computes these dates itself from user_request (Polish time). When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price, guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. Then give the total number and mention 'dalej'. Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Do not add your own recommendations or reasons why some hotels 'stand out' - every hotel on the list meets all filters. Full details of one hotel: booking_get_hotel_details; check-in, reception or parking of several hotels already shown ('we wszystkich hotelach'): booking_get_shown_hotels_info.",
+      description: "Search available hotels on Booking.com in a city or around a point. Results come in batches of 10 together with notes on how to present them - follow every *_note / *_instruction field in the response.\nLOCATION: city + country for 'hotels in X' (city name in English, e.g. 'Warsaw'). For a named place (landmark, station, airport, address) pass landmark_name with city + country - the server finds the coordinates (also in follow-up messages: just pass the same landmark_name again). If the response says multiple_matches, ask the user which place they mean. Never type coordinates yourself. If the user names several areas at once ('centrum i Wola', 'Mokotów albo Ochota'), search the whole city (city + country, without landmark_name) or ask which area they prefer - do not pick one of them. If you are not sure a city name is right, call booking_search_cities; if it could be in more than one country, ask the user.\nRADIUS: pass radius_km only when the user gave a distance ('w promieniu 2 km', 'do 500 m' -> 0.5). For 'koło', 'w pobliżu', 'przy', 'near' omit it - the server uses 1 km and widens to 3 km when nothing is found.\nUSER_REQUEST: always copy the request you are handling, verbatim, into user_request.\nFOLLOW-UPS: results of earlier messages are not visible to you. When the user changes one thing ('teraz 4 gwiazdki', 'bez śniadania'), search again with everything the user asked for earlier in the conversation and change only that. Say which filter changed; if the list is the same, say so.\nNEXT BATCH: for 'dalej' / 'pokaż kolejne' call this tool again with the same parameters plus continue_previous:true - only in a new message, one batch per reply.\nFILTERS (enforced by the server):\n- 'hotele 3*' = min_stars 3 + exact_stars true; 'co najmniej 3*', '3+', 'od 3*' = exact_stars false.\n- breakfast_only true for 'ze śniadaniem', 'śniadanie w cenie', 'with breakfast': prices are then for offers with breakfast included (hotels without such an offer are left out). Without it prices are for the cheapest offer.\n- property types: the server reads them from user_request ('tylko hostele', 'apartament', 'pensjonat lub B&B') and shows only those types - never present other types as matching. exclude_hostels is true by default; false only if the user accepts hostels, apartments or guesthouses - then keep every other filter from the conversation (stars, price, rating, amenities) unchanged.\n- price limits are per night; amenities via required_facilities; ratings via min_review_score.\n- chain or brand ('hotele Marriott', 'tylko ibis', 'Hiltony') -> chain; never pick chain hotels from the list by their names yourself. Each hotel has 'brand' (e.g. 'Novotel (Accor)') - questions which chain a hotel belongs to are answered from it, not from Weco documents.\n- Zero results: explain which filter caused it (zero_results_breakdown) and ASK before relaxing a filter - never run a relaxed search on your own.\nDATES are optional - do not ask for them. 'dziś'/'today'/'jutro'/'tomorrow' = 1 night; the server computes these dates itself from user_request (Polish time). When omitted, the server reuses the dates given earlier in this conversation or uses sample dates about 3 months ahead; follow dates_note.\nPRESENTING: list every hotel of the batch numbered with its 'position': price as price_label word for word (it says for how many nights), guest rating (or 'ocena niedostępna'), distance (when searching around a point), breakfast (free, or paid with the price), one 'Parking:' line (for parking_kind public_only: 'tylko parking publiczny, obiekt nie ma własnego') and the booking link. End with closing_line word for word (total number and 'dalej'). Use only data from this tool's response in this message - never invent hotels, prices or ratings and never show raw field names. Do not add your own recommendations or reasons why some hotels 'stand out' - every hotel on the list meets all filters. Full details of one hotel: booking_get_hotel_details; check-in, reception or parking of several hotels already shown ('we wszystkich hotelach'): booking_get_shown_hotels_info.",
       inputSchema: SearchToolInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -689,6 +691,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         console.error("=== DIAG user_request: \"" + userText.slice(0, 300) + "\"");
       } else {
         console.error("=== DIAG user_request: brak - promien i hostele wg pol od modelu.");
+      }
+      // (13.11) Limit wynikow tylko, gdy uzytkownik prosi o liczbe ("5 najlepszych", "top 10", "kilka propozycji").
+      // Agent sam dopisal results_limit 5 do "hotel z barem na dachu" - 88 hoteli przycietych do 5, bez "dalej".
+      if (params.results_limit != null && userText && !params.continue_previous && !userAskedForCount(userText)) {
+        console.error("=== DIAG results_limit: agent wyslal " + params.results_limit + ", ale w prosbie nie ma liczby wynikow - pomijam (paczka 10).");
+        params.results_limit = undefined;
       }
       if (usingCoordinates) {
         const lat = Number(params.latitude);
@@ -1329,7 +1337,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           // a breakfast_price_paid to cena sniadania dokupowanego do oferty bez sniadania.
           if (fh.breakfast_included) fh.breakfast_price_paid = null;
           const d = distanceById.get(h.hotel_id);
-          fh.distance_km = d != null ? Math.round(d * 10) / 10 : null;
+          // (13.11) Obszar (Trojmiasto) - odleglosc od srodka Sopotu nic nie mowi, nie podajemy.
+          fh.distance_km = d != null && !region ? Math.round(d * 10) / 10 : null;
+          // (13.11) "1198,76 PLN" wygladalo na cene za noc - gotowy opis do przepisania.
+          fh.price_label = priceLabel(fh.price_total, nights, fh.currency);
           return fh;
         });
         // === MIASTO PRZY HOTELU (13.11) - przy obszarze (Trojmiasto, aglomeracja slaska) i poszerzonym
@@ -1559,6 +1570,13 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         } else {
           output.has_more = false;
         }
+        // (13.11) Agent pomijal laczna liczbe i "dalej" (informacja byla w paging_note) - gotowe zdanie.
+        if (limitedAll.length > 0) {
+          output.closing_line = allFormatted.length > limitedAll.length
+            ? "Pokazuję " + limitedAll.length + " z " + allFormatted.length + " obiektów spełniających kryteria."
+            : closingLine(limitedAll.length, formatted.length, pageSize, true);
+          output.closing_line_instruction = "End the reply with closing_line, word for word, as the last sentence.";
+        }
 
         output.review_score_note = hotelsWithScore === 0
           ? "No hotel here has a guest rating (ratings unavailable)."
@@ -1605,8 +1623,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
               "the correct Polish form (e.g. 'Wawelu', 'dworca Kraków Główny'), numbers unchanged. When the user asked " +
               "for exactly this distance: only 'Szukam w promieniu X km od {miejsce}.' without the part about the default.";
           }
-          output.location_note = "Hotels within " + params.radius_km + " km of the point - give each hotel's distance_km" +
-            (params.sort_by === "distance" ? " (sorted by distance)." : ".");
+          output.location_note = region
+            ? "Search of the whole area " + region.label + " - do not give any distances."
+            : "Hotels within " + params.radius_km + " km of the point - give each hotel's distance_km" +
+              (params.sort_by === "distance" ? " (sorted by distance)." : ".");
         } else {
           output.location_note = "City-wide search - not filtered by distance to any place.";
         }

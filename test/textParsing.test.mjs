@@ -136,3 +136,26 @@ test("obszary (13.11): Trojmiasto i aglomeracja slaska, samo 'Slask' nie", () =>
   assert.equal(regionFromText("hotel na Śląsku w Katowicach"), null);
   assert.equal(regionFromText("hotel w Katowicach"), null);
 });
+
+import { userAskedForCount, priceLabel, closingLine } from "../dist/services/textParsing.js";
+test("limit tylko na prosbe (13.11)", () => {
+  for (const t of ["5 najlepszych hoteli w Krakowie", "pokaż 3 hotele w Gdańsku", "top 10 hoteli w Warszawie",
+                   "daj mi kilka propozycji w Sopocie", "trzy najtańsze hotele w Poznaniu", "podaj 5 hoteli 4*"]) {
+    assert.equal(userAskedForCount(t), true, t);
+  }
+  for (const t of ["hotel z barem na dachu w Warszawie", "hotele w Gdańsku 15-17.12 hotele", "hotele 4* na weekend 27-29/11",
+                   "hotele w Gdańsku dla dwóch dorosłych z półtorarocznym dzieckiem 15-17.12", "hotel dla 2 osób 3 noce",
+                   "hotele 3* 4 km od Wawelu 12–13.12"]) {
+    assert.equal(userAskedForCount(t), false, t);
+  }
+});
+test("opis ceny i zdanie konczace liste (13.11)", () => {
+  assert.equal(priceLabel(1198.76, 2, "PLN"), "1198,76 PLN za 2 noce (599,38 PLN/noc)");
+  assert.equal(priceLabel(620, 1, "PLN"), "620 PLN za 1 noc");
+  assert.equal(priceLabel(1000, 5, "EUR"), "1000 EUR za 5 nocy (200 EUR/noc)");
+  assert.equal(priceLabel(null, 2, "PLN"), null);
+  assert.equal(closingLine(1, 1, 10, true), "Znaleziono 1 obiekt spełniający kryteria – to wszystkie wyniki.");
+  assert.equal(closingLine(18, 10, 10, true), "Znaleziono 18 obiektów spełniających kryteria – napisz „dalej”, aby zobaczyć kolejne 8.");
+  assert.equal(closingLine(18, 18, 10, false), "To już wszystkie wyniki (18).");
+  assert.equal(closingLine(3, 3, 10, true), "Znaleziono 3 obiekty spełniające kryteria – to wszystkie wyniki.");
+});
