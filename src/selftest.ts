@@ -186,6 +186,16 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "szczegoly: pytanie uzupelniajace bez hotel_id ('a jak tam z parkingiem?')",
+    tool: "booking_get_hotel_details",
+    args: (c) => (c.hotelId ? { question_about: "parking", user_request: "a jak tam z parkingiem?" } : null),
+    check: (r, c) => {
+      if (r.isError) return "blad: " + r.text.slice(0, 150);
+      if (r.data?.hotel_id !== c.hotelId) return "inny hotel / brak: " + (r.data?.hotel_id ?? r.data?.status ?? "?");
+      return r.data?.parking_summary ? null : "brak parking_summary";
+    },
+  },
+  {
     name: "dostepnosc hotelu (daty, 2 doroslych)",
     tool: "booking_check_hotel_availability",
     args: (c) => (c.hotelId ? { hotel_id: c.hotelId, checkin: c.checkin, checkout: c.checkout, adults: 2 } : null),

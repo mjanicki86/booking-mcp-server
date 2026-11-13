@@ -7,10 +7,15 @@ import { config } from "../config.js";
 import { sanitizeForOrchestrator } from "../utils/sanitizeForOrchestrator.js";
 import { LOG_DEBUG } from "../services/bookingClient.js";
 import { brandLabel } from "../services/chains.js";
+import { RequestContext } from "../services/requestContext.js";
+import { rememberChatHotel, recentChatHotel } from "../services/chatHotel.js";
 
 const HotelDetailsInputSchema = z.object({
-  hotel_id: z.number().int()
-    .describe("hotel_id from booking_search_hotels or booking_find_hotel in this message"),
+  // (13.11, Damian: "a jak tam z parkingiem?" po kontakcie do Mercure -> agent nie mial id, Copilot sie poddal)
+  hotel_id: z.number().int().optional()
+    .describe("hotel_id from booking_search_hotels or booking_find_hotel in this message. OMIT it for a follow-up " +
+      "question about the hotel discussed just before ('a parking?', 'a jak z parkingiem?', 'a śniadanie?') - the " +
+      "server then uses the last hotel of this conversation."),
   // (12.11) Google Places: telefon recepcji i strona WWW (kontakt) oraz parking ze strony hotelu.
   // Pobierane tylko przy pytaniu o kontakt / parking (koszt zapytan Google).
   question_about: z.string().max(40).optional()
@@ -478,14 +483,15 @@ export async function fetchParkingSummaries(
 export function registerHotelDetailsTool(
   server: McpServer,
   apiKey: string,
-  affiliateId: string
+  affiliateId: string,
+  ctx?: RequestContext
 ): void {
   parkingApiCreds = { apiKey, affiliateId };
   server.registerTool(
     "booking_get_hotel_details",
     {
       title: "Get Hotel Details",
-      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you; if you only know the hotel name, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nAlways copy the user's request verbatim into user_request; for contact or parking questions also set question_about ('contact' / 'parking').\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking; then follow parking_from_website.note if present. Contact: hotel_contact (phone and website from Google) is the hotel's own contact - give it first; 'contact' is the trader (company operating the property) registered on Booking.com - follow contact_note.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
+      description: "Full details of ONE hotel: facilities, parking, meal prices, rooms, check-in/out times, payment, pets, damage deposit, cots and extra beds, age rules, contact, chain/brand ('brand', e.g. 'Novotel (Accor)' - use it for questions which chain the hotel belongs to). hotel_id must come from booking_search_hotels or booking_find_hotel in THIS message - results of earlier messages are not visible to you. FOLLOW-UP about the hotel discussed just before ('a jak tam z parkingiem?', 'a śniadanie?', 'a zwierzęta?'): call this tool WITHOUT hotel_id (with user_request and question_about) - the server uses the last hotel of this conversation. If the user names a different hotel, call booking_find_hotel first. Never guess or construct an id.\nAnswer only from fields of the response; if a field is null, say Booking.com does not provide it (a 24-hour reception does not mean check-in at any time - use checkin_from / checkin_until).\nAlways copy the user's request verbatim into user_request; for contact or parking questions also set question_about ('contact' / 'parking').\nParking: describe parking_summary once, in your own words; for parking_kind public_only say the hotel has no own parking; then follow parking_from_website.note if present. Contact: hotel_contact (phone and website from Google) is the hotel's own contact - give it first; 'contact' is the trader (company operating the property) registered on Booking.com - follow contact_note.\nAlways end the answer with the link from 'url' (e.g. '[Nazwa hotelu na Booking.com](url)').\nFor check-in times, reception or parking of SEVERAL hotels shown in this conversation use booking_get_shown_hotels_info. For amenities of a whole list, repeat booking_search_hotels (every hotel there has parking_summary; amenities via required_facilities) instead of calling this tool for each hotel.",
       inputSchema: HotelDetailsInputSchema.shape,
       annotations: {
         readOnlyHint: true,
@@ -495,13 +501,30 @@ export function registerHotelDetailsTool(
       },
     },
     async (params: HotelDetailsInput) => {
+      // (13.11) Bez hotel_id - ostatni hotel tej rozmowy (find_hotel / poprzednie szczegoly).
+      let hotelId: number;
+      if (params.hotel_id != null) {
+        hotelId = params.hotel_id;
+      } else {
+        const recent = recentChatHotel(ctx?.chatId ?? "");
+        if (!recent) {
+          console.error("=== DIAG hotel_details: brak hotel_id i brak hotelu w tej rozmowie - pytam o hotel.");
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ status: "need_hotel",
+              message: "No hotel was discussed in this conversation yet. Suggested reply: one plain question in Polish " +
+                "about which hotel (name and city) the user means; then call booking_find_hotel." }) }],
+          };
+        }
+        hotelId = recent.id;
+        console.error("=== DIAG hotel_details: brak hotel_id - ostatni hotel rozmowy: " + (recent.name ?? "?") + " (" + recent.id + ").");
+      }
       try {
         const endpoint = "/accommodations/details";
         const url = config.bookingApiBaseUrl + endpoint;
-        console.error("=== Calling hotel details for hotel " + params.hotel_id);
+        console.error("=== Calling hotel details for hotel " + hotelId);
 
         const requestBody = {
-          accommodations: [params.hotel_id],
+          accommodations: [hotelId],
           extras: ["facilities", "description", "payment", "policies", "rooms"],
         };
 
@@ -540,11 +563,11 @@ export function registerHotelDetailsTool(
           // 2026-10-28: pusty data:[] dla wymyslonych ID byl oddawany jako zwykla
           // odpowiedz, a model wnioskowal z niego "hotel nie podaje danych".
           console.error("=== OSTRZEZENIE hotel_details: /details zwrocil pusta liste dla hotel_id=" +
-            params.hotel_id + " - ID nie istnieje (najpewniej zgadniete przez model).");
+            hotelId + " - ID nie istnieje (najpewniej zgadniete przez model).");
           return {
             content: [{
               type: "text",
-              text: "ERROR: hotel_id " + params.hotel_id + " does not exist on Booking.com - it was most likely " +
+              text: "ERROR: hotel_id " + hotelId + " does not exist on Booking.com - it was most likely " +
                 "guessed or reconstructed from memory, not copied from a tool response in this turn. This says " +
                 "NOTHING about the hotel's parking, amenities or data - do NOT tell the user the hotel has no " +
                 "information. Get the real id: call booking_find_hotel with the hotel name, city and country, then " +
@@ -587,7 +610,7 @@ export function registerHotelDetailsTool(
 
         const parkingDetails = parseParkingDetails(hotel.facility_details, hotelCurrency);
         const parkingSummary = buildParkingSummary(hotel.facility_details, hotelCurrency, facilities, facilityIdsOf(hotel.facilities));
-        console.error("=== DIAG hotel_details " + params.hotel_id + ": parking_summary=\"" + parkingSummary +
+        console.error("=== DIAG hotel_details " + hotelId + ": parking_summary=\"" + parkingSummary +
           "\", nazwy udogodnien z constants=" + (facilityNames ? "tak" : "NIE (fallback)"));
         const wifiDetails = parseWifiDetails(hotel.facility_details, hotelCurrency);
 
@@ -680,7 +703,7 @@ export function registerHotelDetailsTool(
             maximum_checkin_age: policies.maximum_checkin_age ?? null,
             minimum_guest_age: policies.minimum_guest_age ?? null,
           } : null;
-        console.error("=== DIAG hotel_details " + params.hotel_id + ": depozyt=" +
+        console.error("=== DIAG hotel_details " + hotelId + ": depozyt=" +
           (damageDeposit ? JSON.stringify(damageDeposit) : "brak w danych") +
           ", dostawki=" + (cotsAndExtraBeds ? "tak" : "brak") + ", wiek=" + (ageRules ? JSON.stringify(ageRules) : "brak"));
 
@@ -709,7 +732,7 @@ export function registerHotelDetailsTool(
           if (place) {
             googleContact = { phone: place.phone, website: place.website, google_maps: place.maps_url, google_name: place.name };
           }
-          console.error("=== DIAG hotel_details " + params.hotel_id + ": temat " + JSON.stringify(topic) + ", Google: " +
+          console.error("=== DIAG hotel_details " + hotelId + ": temat " + JSON.stringify(topic) + ", Google: " +
             (googlePlacesEnabled() ? (place ? "tel " + (place.phone ? "jest" : "brak") + ", www " + (place.website ? "jest" : "brak") : "nie znaleziono") : "wylaczony"));
           if (topic.parking && place?.website) {
             const w = await parkingFromWebsite(place.website);
@@ -736,13 +759,15 @@ export function registerHotelDetailsTool(
         const hotelCountry = String(hotel.location?.country ?? "").toLowerCase();
         let contactOut = contact;
         if (googleContact?.phone && contact && traderCountry && hotelCountry && traderCountry !== hotelCountry) {
-          console.error("=== DIAG hotel_details " + params.hotel_id + ": pomijam dane firmy z Booking.com (kraj " +
+          console.error("=== DIAG hotel_details " + hotelId + ": pomijam dane firmy z Booking.com (kraj " +
             traderCountry + ", hotel " + hotelCountry + ") - jest telefon recepcji z Google.");
           contactOut = null;
         }
 
+        // (13.11) ten hotel = "ostatni hotel rozmowy" dla pytan uzupelniajacych ("a parking?")
+        rememberChatHotel(ctx?.chatId ?? "", hotelId, typeof name === "string" ? name : null);
         const output: any = {
-          hotel_id: params.hotel_id,
+          hotel_id: hotelId,
           name: name,
           brand: await brandLabel(hotel.brands),
           address: address || null,
