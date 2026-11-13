@@ -694,9 +694,11 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       }
       // (13.11) Limit wynikow tylko, gdy uzytkownik prosi o liczbe ("5 najlepszych", "top 10", "kilka propozycji").
       // Agent sam dopisal results_limit 5 do "hotel z barem na dachu" - 88 hoteli przycietych do 5, bez "dalej".
-      if (params.results_limit != null && userText && !params.continue_previous && !userAskedForCount(userText)) {
+      // results_limit ma domyslnie 10 (schemat) - reagujemy tylko na mniejszy.
+      if (params.results_limit != null && params.results_limit < RESULT_PAGE_SIZE && userText &&
+          !params.continue_previous && !userAskedForCount(userText)) {
         console.error("=== DIAG results_limit: agent wyslal " + params.results_limit + ", ale w prosbie nie ma liczby wynikow - pomijam (paczka 10).");
-        params.results_limit = undefined;
+        params.results_limit = RESULT_PAGE_SIZE;
       }
       if (usingCoordinates) {
         const lat = Number(params.latitude);
