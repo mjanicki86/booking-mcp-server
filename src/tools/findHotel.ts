@@ -272,10 +272,24 @@ function isMatch(hotelName: string, searchName: string): boolean {
   return searchTokens.every((st) => hotelTokens.some((ht) => tokensMatch(ht, st)));
 }
 
+// === SLOWA OGOLNE W CZESCIOWYM DOPASOWANIU (13.11, "Poleczki Residence") ===
+// Kandydaci, ktorzy maja wspolne tylko "Residence" (Arche Pulawska Residence, Platinum Residence,
+// Oxygen Residence), byli mylacy. Kandydat z czesci nazwy musi miec wspolne slowo znaczace.
+// Pelne dopasowanie (isMatch) bez zmian.
+const GENERIC_NAME_WORDS = new Set([
+  "residence", "residences", "rezydencja", "rezydencji", "apartments", "apartment", "apartamenty", "apartament",
+  "apartamentow", "apart", "aparthotel", "suites", "suite", "house", "guest", "guesthouse", "hostel", "rooms",
+  "room", "pokoje", "pokoj", "villa", "willa", "pensjonat", "studio", "studios", "boutique", "spa", "resort",
+  "inn", "lodge", "home", "homes", "stay", "flat", "flats", "city", "center", "centre", "centrum", "old", "town",
+  "premium", "deluxe", "luxury", "grand", "park",
+]);
+
 function partialMatch(hotelName: string, searchName: string, cityExclusions: Set<string>): boolean {
   const hotelTokens = tokenize(hotelName);
   const rawSearchTokens = tokenizeQuery(searchName);
-  const searchTokens = rawSearchTokens.filter((t) => !cityExclusions.has(t));
+  const meaningful = rawSearchTokens.filter((t) => !cityExclusions.has(t) && !GENERIC_NAME_WORDS.has(t));
+  // Zapytanie z samych slow ogolnych ("Residence") - zostaje jak dawniej.
+  const searchTokens = meaningful.length > 0 ? meaningful : rawSearchTokens.filter((t) => !cityExclusions.has(t));
   const effectiveTokens = searchTokens.length > 0 ? searchTokens : rawSearchTokens;
   if (effectiveTokens.length === 0 || hotelTokens.length === 0) return false;
   return effectiveTokens.some((st) => hotelTokens.some((ht) => tokensMatch(ht, st)));

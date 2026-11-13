@@ -257,6 +257,10 @@ export interface Region { label: string; centerName: string; lat: number; lon: n
 const REGIONS: { re: RegExp; region: Region }[] = [
   { re: /tr[oó]jmi[ae][sś]|tricity|tri-city/i,
     region: { label: "Trójmiasto (Gdańsk, Sopot, Gdynia)", centerName: "Sopotu", lat: 54.4418, lon: 18.5601, radiusKm: 15 } },
+  // (13.11) Aglomeracja slaska / GZM: punkt w Katowicach, 28 km (Gliwice ~25 km, Tychy ~16 km).
+  // Samo "Slask" (cale wojewodztwo) celowo NIE pasuje.
+  { re: /aglomeracj\w*\s+(g[oó]rno)?[sś]l[aą]sk|[sś]l[aą]sk\w*\s+aglomeracj|konurbacj\w*\s+(g[oó]rno)?[sś]l[aą]sk|metropoli\w*\s+(g[oó]rno)?[sś]l[aą]sk|g[oó]rno[sś]l[aą]sk\w*\s+(-\s*zag\w*\s+)?(zwi[aą]z|metropol|okr[eę]g|aglomeracj)|\bGZM\b|upper\s+silesia/i,
+    region: { label: "aglomeracja śląska (Katowice, Gliwice, Zabrze, Bytom, Chorzów, Sosnowiec, Tychy i okolice)", centerName: "Katowic", lat: 50.2599, lon: 19.0216, radiusKm: 28 } },
 ];
 export function regionFromText(text: string): Region | null {
   if (!text) return null;

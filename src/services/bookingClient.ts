@@ -303,6 +303,8 @@ export class BookingApiClient {
     const coordsById: Record<number, { latitude: number; longitude: number }> = {};
     const facilitiesById: Record<number, number[]> = {};
     const accTypeById: Record<number, number> = {};
+    // Miasto obiektu (id z /details) - nazwa miasta przy wynikach dla obszaru (13.11, Trojmiasto).
+    const cityIdById: Record<number, number> = {};
     // Cena sniadania jako platnego dodatku (gdy nie jest wliczone w cene
     // pokoju) - Booking.com zwraca to w meal_prices.breakfast, dostepne
     // przy okazji tego samego wywolania /accommodations/details co facilities.
@@ -408,6 +410,9 @@ export class BookingApiClient {
           if (d.id != null && typeof d.accommodation_type === "number") {
             accTypeById[d.id] = d.accommodation_type;
           }
+          if (d.id != null && typeof d.location?.city === "number") {
+            cityIdById[d.id] = d.location.city;
+          }
           if (d.id != null && d.rating && typeof d.rating === "object") {
             detailsRatingById[d.id] = {
               stars: typeof d.rating.stars === "number" ? d.rating.stars : undefined,
@@ -442,7 +447,7 @@ export class BookingApiClient {
 
     return {
       hotels: rawHotels.map((h: any) =>
-        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById, reviewById, detailsRatingById)
+        normalizeHotel(h, namesById, coordsById, facilitiesById, accTypeById, breakfastPriceById, reviewById, detailsRatingById, cityIdById)
       ),
       total_count: raw.total_count ?? raw.metadata?.total_results ?? raw.count ?? rawHotels.length,
       currency: raw.currency,
@@ -526,7 +531,8 @@ function normalizeHotel(
   accTypeById: Record<number, number>,
   breakfastPriceById: Record<number, number>,
   reviewById: Record<number, { score?: number; count?: number }>,
-  detailsRatingById: Record<number, { stars?: number; review_score?: number; review_count?: number }>
+  detailsRatingById: Record<number, { stars?: number; review_score?: number; review_count?: number }>,
+  cityIdById: Record<number, number> = {}
 ): Hotel {
   const hotelId = raw.hotel_id ?? raw.id ?? 0;
 
@@ -582,6 +588,7 @@ function normalizeHotel(
     free_cancellation: extractFreeCancellation(raw.products),
     facilities: facilitiesById[hotelId],
     accommodation_type_id: accTypeById[hotelId],
+    city_id: cityIdById[hotelId],
   };
 }
 

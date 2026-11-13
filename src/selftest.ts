@@ -227,8 +227,29 @@ const SCENARIOS: Scenario[] = [
     check: (r) => {
       const h = hotels(r);
       if (h.length === 0) return "brak hoteli";
-      return h.some((x) => typeof x.distance_km === "number") ? null : "szukanie po miescie zamiast obszaru";
+      if (!h.some((x) => typeof x.distance_km === "number")) return "szukanie po miescie zamiast obszaru";
+      // (13.11) w pierwszej paczce co najmniej 2 miasta i nazwa miasta przy hotelu
+      const cities = new Set(h.map((x) => x.city).filter((c) => !!c));
+      return cities.size >= 2 ? null : "w paczce miasta: " + (Array.from(cities).join(", ") || "brak pola city");
     },
+  },
+  {
+    name: "wyszukiwanie: aglomeracja slaska (kilka miast)",
+    tool: "booking_search_hotels",
+    args: (c) => ({ city: "Katowice", country: "pl", checkin: c.checkin, checkout: c.checkout, user_request: "hotele w aglomeracji śląskiej" }),
+    check: (r) => {
+      const h = hotels(r);
+      if (h.length === 0) return "brak hoteli";
+      const cities = new Set(h.map((x) => x.city).filter((c) => !!c));
+      return cities.size >= 2 ? null : "w paczce miasta: " + (Array.from(cities).join(", ") || "brak pola city");
+    },
+  },
+  {
+    name: "znajdz hotel: bez kandydatow z samego 'Residence' (Poleczki)",
+    tool: "booking_find_hotel",
+    args: () => ({ hotel_name: "Poleczki Residence", city: "Warsaw", country: "pl" }),
+    check: (r) => (r.data?.status === "no_match" || r.data?.status === "not_found" || r.data?.status === "single_match"
+      ? null : "status " + (r.data?.status ?? "?") + " (kandydaci z czesci nazwy)"),
   },
   {
     name: "znajdz hotel: miasto z nazwy (Faltom Gdynia -> Rumia)",

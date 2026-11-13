@@ -41,7 +41,7 @@ function trimMap(m: Map<string, unknown>): void {
 // 7 razy przy kazdym starcie kontenera, a booking_search_cities i "alternatywne
 // miasta" w booking_find_hotel - przy kazdym uzyciu. Teraz lista kraju jest
 // pobierana raz na 24 h i wspolna dla wszystkich.
-interface CountryCity { id: number; name: string; norm: string; variants: string[] }
+interface CountryCity { id: number; name: string; norm: string; variants: string[]; pl?: string }
 const COUNTRY_CITIES_TTL_MS = 24 * 60 * 60 * 1000;
 const countryCities = new Map<string, { at: number; list: CountryCity[] }>();
 const countryInFlight = new Map<string, Promise<CountryCity[]>>();
@@ -63,7 +63,8 @@ async function loadCountryCities(client: BookingApiClient, country: string): Pro
       for (const entry of (resp.data ?? []) as any[]) {
         const name = extractName(entry.name);
         if (!name || entry.id == null) continue;
-        list.push({ id: entry.id, name, norm: normalizeText(name), variants: extractAllNameVariants(entry.name) });
+        const pl = entry.name && typeof entry.name === "object" && typeof entry.name.pl === "string" ? entry.name.pl : undefined;
+        list.push({ id: entry.id, name, norm: normalizeText(name), variants: extractAllNameVariants(entry.name), pl });
       }
       if (!resp.next_page) { complete = true; break; }
       // Przy paginacji "page" musi byc jedynym polem.
@@ -80,6 +81,22 @@ async function loadCountryCities(client: BookingApiClient, country: string): Pro
   } finally {
     countryInFlight.delete(country);
   }
+}
+
+// === NAZWY MIAST PO ID (13.11, Trojmiasto / aglomeracja slaska) ===
+// Przy wyszukiwaniu po obszarze nazwa hotelu nie mowi, w ktorym miescie jest obiekt.
+// Id miasta jest w /details, nazwa z listy miast kraju (cache 24 h). Po polsku, jesli jest.
+export async function cityNamesById(client: BookingApiClient, country: string, ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!country || ids.length === 0) return out;
+  try {
+    const list = await loadCountryCities(client, country.toLowerCase());
+    const want = new Set(ids);
+    for (const c of list) if (want.has(c.id)) out.set(c.id, c.pl ?? c.name);
+  } catch (err) {
+    console.error("=== Blad przy nazwach miast (pomijam): " + (err instanceof Error ? err.message : String(err)));
+  }
+  return out;
 }
 
 const MAX_PAGES = 200;

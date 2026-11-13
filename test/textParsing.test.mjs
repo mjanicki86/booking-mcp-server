@@ -126,3 +126,13 @@ test("link Booking.com (12.11, Poleczki): slug, nazwa, kraj", () => {
   assert.equal(bookingSlug("https://www.booking.com/hotel/gb/swan-bedford.en-gb.html"), "swan-bedford");
   assert.equal(parseBookingUrl("Hotel Poleczki Warszawa"), null);
 });
+
+test("obszary (13.11): Trojmiasto i aglomeracja slaska, samo 'Slask' nie", () => {
+  assert.match(regionFromText("hotele w Trójmieście 11-13.12").label, /Trójmiasto/);
+  for (const t of ["hotel w aglomeracji śląskiej", "Aglomeracja Śląska 4*", "hotele na terenie GZM",
+                   "Górnośląski Związek Metropolitalny", "metropolia śląska", "hotel w konurbacji górnośląskiej"]) {
+    assert.match(regionFromText(t)?.label ?? "brak: " + t, /aglomeracja śląska/, t);
+  }
+  assert.equal(regionFromText("hotel na Śląsku w Katowicach"), null);
+  assert.equal(regionFromText("hotel w Katowicach"), null);
+});

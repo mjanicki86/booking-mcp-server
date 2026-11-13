@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BookingApiClient, BookingApiRequestError, formatHotel } from "../services/bookingClient.js";
-import { resolveCityId, cityNotFoundMessage } from "../services/cityResolver.js";
+import { resolveCityId, cityNotFoundMessage, cityNamesById } from "../services/cityResolver.js";
 import { HotelSearchInputSchema, HotelSearchInput } from "../schemas/inputSchemas.js";
 import { DEFAULT_BOOKER_COUNTRY, DEFAULT_BOOKER_PLATFORM, CHARACTER_LIMIT } from "../constants.js";
 import { z } from "zod";
@@ -420,6 +420,9 @@ const CONTINUE_FALLBACK_MAX_AGE_MS = 30 * 60 * 1000;
 // niedawnej listy o tych samych parametrach istotnych dla ZAWARTOSCI listy
 // (miejsce, promien, daty, goscie, filtry), pomijajac pola, ktore model gubi
 // lub dopisuje przy "dalej" (sort_by, currency, city/country obok wspolrzednych).
+// Booking.com odrzucil accommodation_types w /accommodations/search (13.11) - nie wysylamy do restartu.
+let apiTypesFilterUnsupported = false;
+
 const LOOSE_MATCH_IGNORED_FIELDS = ["sort_by", "currency", "city", "country"];
 const savedLists: { key: string; loose: string; at: number }[] = [];
 const SAVED_LISTS_MAX = 300;
@@ -666,7 +669,12 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
       // przy "4 km od Wawelu" popularnosc wstawiala hotel z 3,6 km na 1. miejsce,
       // a hotele 0,4-0,7 km trafialy na druga strone. Kolo punktu domyslnie od
       // najblizszego; inne sortowanie (cena, ocena, gwiazdki) zostaje bez zmian.
-      if (usingCoordinates && (params.sort_by == null || params.sort_by === "popularity") &&
+      // (13.11) Obszar wielu miast (Trojmiasto) to nie punkt - sortowanie od srodka Sopotu dawalo
+      // w pierwszej dziesiatce sam Sopot. Dla obszaru zostaje kolejnosc Booking.com (popularnosc).
+      if (region && (params.sort_by == null || params.sort_by === "popularity")) {
+        console.error("=== DIAG sortowanie: obszar " + region.label + " - kolejnosc Booking.com (popularnosc), nie od srodka.");
+      }
+      if (usingCoordinates && !region && (params.sort_by == null || params.sort_by === "popularity") &&
           !/popularn|popular/i.test(typeof params.user_request === "string" ? params.user_request : "")) {
         if (!widen && params.sort_by === "popularity") {
           console.error("=== DIAG sortowanie: wyszukiwanie kolo punktu - domyslnie od najblizszego (zamiast popularnosci).");
@@ -1036,8 +1044,34 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         if (ratingPart) request.rating = ratingPart;
         // Booking.com zwraca wtedy oferty ze sniadaniem w cenie (ich ceny), a hotele bez takiej oferty pomija.
         if (params.breakfast_only) request.meal_plan = "breakfast_included";
+        // === TYPY OBIEKTOW W ZAPYTANIU DO API (13.11, Trojmiasto: 500 obiektow, w tym 403 apartamenty,
+        // po filtrze zostaly 52 hotele) - pula 500 ma byc z szukanych typow. Lokalny filtr zostaje.
+        // Gdyby API odrzucilo pole - powtorka bez niego i wylaczenie do restartu.
+        const apiTypes: number[] | null = typeRequest ? typeRequest.types
+          : params.exclude_hostels ? Array.from(ALLOWED_HOTEL_ACCOMMODATION_TYPES) : null;
+        if (apiTypes && apiTypes.length > 0 && !apiTypesFilterUnsupported) request.accommodation_types = apiTypes;
 
-        const result = await client.searchAccommodations(request);
+        let result: Awaited<ReturnType<typeof client.searchAccommodations>>;
+        try {
+          result = await client.searchAccommodations(request);
+        } catch (typesErr) {
+          if (request.accommodation_types && typesErr instanceof BookingApiRequestError && typesErr.apiError.status === 400) {
+            apiTypesFilterUnsupported = true;
+            console.error("=== OSTRZEZENIE: Booking.com odrzucil accommodation_types (" + typesErr.message.slice(0, 200) +
+              ") - powtarzam bez filtra typow w API (filtr lokalny zostaje).");
+            delete request.accommodation_types;
+            result = await client.searchAccommodations(request);
+          } else {
+            throw typesErr;
+          }
+        }
+        if (request.accommodation_types) {
+          console.error("=== DIAG typy w API: accommodation_types=" + JSON.stringify(request.accommodation_types) +
+            " -> " + result.hotels.length + " obiektow, typy w odpowiedzi: " + JSON.stringify(
+              result.hotels.reduce((acc: Record<string, number>, h) => {
+                const k = String(h.accommodation_type_id); acc[k] = (acc[k] ?? 0) + 1; return acc;
+              }, {})) + ".");
+        }
 
         if (params.required_facilities?.length && result.facilities_fetch_failed) {
           return {
@@ -1298,6 +1332,24 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           fh.distance_km = d != null ? Math.round(d * 10) / 10 : null;
           return fh;
         });
+        // === MIASTO PRZY HOTELU (13.11) - przy obszarze (Trojmiasto, aglomeracja slaska) i poszerzonym
+        // promieniu nazwa hotelu nie mowi, w ktorym miescie jest obiekt.
+        let multiCity = false;
+        if (usingCoordinates) {
+          const cityCountry = params.country ?? (region ? "pl" : undefined);
+          const cityIdByHotel = new Map(hotels.map((h) => [h.hotel_id, h.city_id] as [number, number | undefined]));
+          const ids = Array.from(new Set(hotels.map((h) => h.city_id).filter((x): x is number => typeof x === "number")));
+          if (cityCountry && ids.length > 1) {
+            const names = await cityNamesById(client, cityCountry, ids);
+            for (const fh of allFormatted) {
+              const cid = cityIdByHotel.get(fh.hotel_id);
+              fh.city = cid != null ? names.get(cid) ?? null : null;
+            }
+            const distinct = new Set(allFormatted.map((f) => f.city).filter((c) => !!c));
+            multiCity = distinct.size > 1;
+            console.error("=== DIAG miasta na liscie: " + distinct.size + " (" + Array.from(distinct).slice(0, 8).join(", ") + ").");
+          }
+        }
         // results_limit < paczki (np. "5 najlepszych") zmniejsza paczke i cala liste.
         const pageSize = Math.min(RESULT_PAGE_SIZE, params.results_limit ?? RESULT_PAGE_SIZE);
         const limitedAll = params.results_limit != null && params.results_limit < RESULT_PAGE_SIZE
@@ -1558,6 +1610,10 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
         } else {
           output.location_note = "City-wide search - not filtered by distance to any place.";
         }
+        if (multiCity) {
+          output.city_note = "Hotels on this list are in several towns - give the town from the 'city' field next to " +
+            "every hotel name, e.g. 'Hotel X (Sopot)'.";
+        }
 
         // Gwiazdki + inne typy obiektow (31.10): Booking.com nie zwraca obiektow bez
         // kategorii przy filtrze gwiazdek - mowimy o tym wprost (decyzja: wariant 1).
@@ -1604,6 +1660,7 @@ export function registerHotelSearchTool(server: McpServer, client: BookingApiCli
           if (output.breakfast_reminder) meta.breakfast_reminder = output.breakfast_reminder;
           if (output.unsupported_filters_note) meta.unsupported_filters_note = output.unsupported_filters_note;
           if (output.parking_note) meta.parking_note = output.parking_note;
+          if (output.city_note) meta.city_note = output.city_note;
           if (usingCoordinates) meta.radius_km = params.radius_km;
           saveResultSet(searchKey, limitedAll, pageSize, meta, scope);
           rememberSavedList(searchKey, keyParams);

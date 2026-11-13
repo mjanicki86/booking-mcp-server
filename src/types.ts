@@ -60,6 +60,7 @@ export interface Hotel {
   free_cancellation?: boolean;
   facilities?: number[];
   accommodation_type_id?: number;
+  city_id?: number;
 }
 export interface SearchResult {
   hotels: Hotel[];
@@ -106,6 +107,7 @@ export interface FormattedHotel {
   free_cancellation: boolean;
   property_type: string | null;
   booking_url: string | null;
+  city?: string | null;
 }
 export interface HotelSearchOutput {
   [key: string]: unknown;
