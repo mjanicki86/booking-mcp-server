@@ -256,6 +256,22 @@ const SCENARIOS: Scenario[] = [
       return null;
     },
   },
+  // === (18.11) "najblizszy weekend" i okreslenia czasu bez dat - bez dat z wczesniejszych pytan ===
+  {
+    name: "wyszukiwanie: najblizszy weekend = piatek-niedziela (nie daty z rozmowy)",
+    tool: "booking_search_hotels",
+    args: () => ({ city: "Krakow", country: "pl", user_request: "hotele 4* w Krakowie na najbliższy weekend" }),
+    check: (r) => {
+      if (r.isError) return "blad: " + r.text.slice(0, 150);
+      return /Friday-Sunday/.test(String(r.data?.dates_note ?? "")) ? null : "brak weekendu w dates_note: " + String(r.data?.dates_note ?? "-").slice(0, 120);
+    },
+  },
+  {
+    name: "wyszukiwanie: 'za tydzien' bez dat -> need_dates (nie daty z rozmowy)",
+    tool: "booking_search_hotels",
+    args: () => ({ city: "Krakow", country: "pl", user_request: "hotele w Krakowie za tydzień" }),
+    check: (r) => (r.data?.status === "need_dates" ? null : "status " + (r.data?.status ?? (hotels(r).length + " hoteli"))),
+  },
   {
     name: "znajdz hotel: cale slowo w nazwie (Moderno, Poznan)",
     tool: "booking_find_hotel",

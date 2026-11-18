@@ -4,7 +4,7 @@
 // dzialaly tylko w wyszukiwaniu. Teraz kazde narzedzie ustala daty i gosci tutaj, w tej kolejnosci:
 //   1) parametry od agenta, 2) tresc prosby (user_request), 3) pamiec rozmowy (60 min), 4) domyslne.
 // Jedna linia w logu mowi, skad wziela sie kazda wartosc.
-import { fixStayDates, warsawToday } from "./dates.js";
+import { fixStayDates, warsawToday, relativeDatesMessage } from "./dates.js";
 import { parseGuestsFromText } from "./textParsing.js";
 
 // 60 min od OSTATNIEGO uzycia w czacie (okno przesuwne) - jak wczesniej daty w hotelSearch
@@ -63,6 +63,8 @@ export interface Stay {
   children_without_age: number; // dzieci podane bez wieku (trzeba dopytac)
   sources: { dates: Source; adults: Source; rooms: Source; children: Source };
   pastError?: string;          // data w przeszlosci, ktorej nie da sie poprawic
+  needDates?: string;          // (18.11) okreslenie czasu bez dat ("za tydzien") - komunikat dla agenta
+  weekend?: boolean;           // (18.11) daty policzone z "weekend"
 }
 
 const NO_CHILDREN_RE = /bez\s+dzie|bez\s+dziecka|bez\s+dzieci|without\s+(the\s+)?(kids|children|child)/i;
@@ -85,7 +87,9 @@ export function resolveStay(scope: string, input: StayInput, tool: string, opts:
   let checkin = fixed.checkin;
   let checkout = fixed.checkout;
   let datesSource: Source = agentDates ? "agent" : checkin ? "tekst" : "domyslnie";
-  if (!opts.ignoreDates && !checkin && !checkout && mem?.checkin && mem.checkout && mem.checkin >= warsawToday()) {
+  // (18.11) "za tydzien", "na swieta"... bez dat - NIE bierzemy dat z wczesniejszego pytania
+  const relative = !opts.ignoreDates && !agentDates ? (fixed as any).relativeUnresolved as string | undefined : undefined;
+  if (!opts.ignoreDates && !relative && !checkin && !checkout && mem?.checkin && mem.checkout && mem.checkin >= warsawToday()) {
     checkin = mem.checkin;
     checkout = mem.checkout;
     datesSource = "rozmowa";
@@ -151,6 +155,8 @@ export function resolveStay(scope: string, input: StayInput, tool: string, opts:
     adults, rooms, children_ages: ages, children_without_age: withoutAge,
     sources: { dates: datesSource, adults: adultsSource, rooms: roomsSource, children: childrenSource },
     pastError: fixed.pastError,
+    needDates: relative ? relativeDatesMessage(relative) : undefined,
+    weekend: !!(fixed as any).weekend,
   };
 }
 

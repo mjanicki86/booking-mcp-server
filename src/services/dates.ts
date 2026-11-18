@@ -126,6 +126,60 @@ export interface FixedDates {
   checkout?: string;
   pastError?: string;   // komunikat dla agenta, gdy data jest w przeszlosci i nie da sie jej poprawic
   oneNightAdded: boolean;
+  weekend?: boolean;          // (18.11) daty policzone z "weekend"
+  relativeUnresolved?: string; // (18.11) okreslenie czasu, ktorego serwer nie umie przeliczyc (np. "za tydzien")
+}
+
+// === WEEKEND I INNE OKRESLENIA CZASU (18.11, test Michala na prod) ===
+// "hotele 4* w Warszawie na najblizszy weekend" - agent nie podal dat, serwer nie rozumial "weekend"
+// i wzial daty z wczesniejszego pytania w czacie (10-11.12). Weekend = piatek-niedziela (2 noce),
+// jak "weekend 27-29/11" w testach 13.11.
+const WEEKEND_RE = /(^|[^\p{L}])(weekend\p{L}*|w[ił]ikend\p{L}*)([^\p{L}]|$)/iu;
+const LONG_WEEKEND_RE = /d[lł]ug\p{L}*\s+(weekend|w[ił]ikend)/iu;
+const NEXT_WEEKEND_RE = /(przysz[lł]\p{L}*|nast[eę]pn\p{L}*|kolejn\p{L}*)\s+(weekend|w[ił]ikend)|next\s+weekend/iu;
+// Okreslenia, ktorych serwer nie przelicza - wtedy NIE bierzemy dat z pamieci rozmowy.
+const RELATIVE_TIME_RE = new RegExp([
+  "za\\s+(tydzie\\p{L}*|dwa\\s+tygodnie|\\d+\\s+(dni|tygodni\\p{L}*)|miesi\\p{L}*)",
+  "(w\\s+)?(przysz[lł]\\p{L}*|nast[eę]pn\\p{L}*|kolejn\\p{L}*)\\s+(tydzie\\p{L}*|tygodni\\p{L}*|miesi\\p{L}*)",
+  "(^|[^\\p{L}])(w|we|na|od|do|w\\s+t[eę]n|w\\s+t[aą])\\s+(poniedzia[lł]\\p{L}*|wtor\\p{L}*|[sś]rod(a|[eę]|y|zie)(?!\\p{L})|czwart\\p{L}*|pi[aą]t\\p{L}*|sobot\\p{L}*|niedziel\\p{L}*)",
+  "(na|w|po|przed|przez|od)\\s+[sś]wi[eę]t(a|ach|ami|y)(?!\\p{L})", "sylwest\\p{L}*", "maj[oó]wk\\p{L}*", "d[lł]ug\\p{L}*\\s+(weekend|w[ił]ikend)",
+  "ferie", "wielkanoc\\p{L}*", "next\\s+(week|month)", "in\\s+(a|two)\\s+weeks?",
+].join("|"), "iu");
+
+const PL_WEEKDAYS = ["niedziela", "poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota"];
+
+export function weekdayPl(iso: string): string {
+  return PL_WEEKDAYS[new Date(iso + "T12:00:00Z").getUTCDay()];
+}
+
+// Najblizszy weekend (piatek-niedziela). Piatek: od dzis; sobota: sobota-niedziela (1 noc);
+// niedziela: nastepny weekend. "przyszly/nastepny weekend" w piatek-niedziele = weekend za tydzien.
+export function weekendFromText(text: string, today: string = warsawToday()): { checkin: string; checkout: string } | null {
+  if (!text || !WEEKEND_RE.test(text) || LONG_WEEKEND_RE.test(text)) return null;
+  const dow = new Date(today + "T12:00:00Z").getUTCDay(); // 0 nd ... 6 sob
+  const next = NEXT_WEEKEND_RE.test(text);
+  let friday: string;
+  if (dow === 5) friday = next ? addDaysIso(today, 7) : today;
+  else if (dow === 6) {
+    if (!next) return { checkin: today, checkout: addDaysIso(today, 1) };
+    friday = addDaysIso(today, 6);
+  } else if (dow === 0) friday = addDaysIso(today, 5);
+  else friday = addDaysIso(today, 5 - dow);
+  return { checkin: friday, checkout: addDaysIso(friday, 2) };
+}
+
+export function relativeTimeInText(text: string): string | null {
+  if (!text) return null;
+  const m = RELATIVE_TIME_RE.exec(text);
+  return m ? m[0].trim() : null;
+}
+
+// Komunikat dla agenta: okreslenie czasu, ktorego serwer nie przeliczyl.
+export function relativeDatesMessage(phrase: string, today: string = warsawToday()): string {
+  return "The request mentions a time (\"" + phrase + "\") that the server does not convert to dates. Today is " +
+    today + " (" + weekdayPl(today) + ", Polish time). Work out the exact check-in and check-out dates from today and " +
+    "call again with checkin and checkout. Do not reuse dates from earlier messages, and never say that Booking.com " +
+    "did not apply the term. If the term is unclear (e.g. which holidays), ask the user for the dates.";
 }
 
 export function fixStayDates(checkinIn: string | undefined, checkoutIn: string | undefined,
@@ -145,6 +199,24 @@ export function fixStayDates(checkinIn: string | undefined, checkoutIn: string |
       checkout = fromText.checkout;
       console.error(logPrefix + ": agent nie podal dat - biore z tresci prosby: " + checkin +
         (checkout ? " - " + checkout : "") + ".");
+    } else {
+      const wk = weekendFromText(req, today);
+      if (wk) {
+        console.error(logPrefix + ": \"weekend\" w prosbie - " + wk.checkin + " (" + weekdayPl(wk.checkin) + ") - " +
+          wk.checkout + " (" + weekdayPl(wk.checkout) + ").");
+        return { checkin: wk.checkin, checkout: wk.checkout, oneNightAdded: false, weekend: true };
+      }
+      if (/(^|[^\p{L}])pojutrz\p{L}*/iu.test(req)) {
+        checkin = addDaysIso(today, 2);
+        checkout = addDaysIso(today, 3);
+        console.error(logPrefix + ": \"pojutrze\" w prosbie - " + checkin + " - " + checkout + ".");
+      } else if (!TODAY_RE.test(req) && !TOMORROW_RE.test(req)) {
+        const rel = relativeTimeInText(req);
+        if (rel) {
+          console.error(logPrefix + ": okreslenie czasu \"" + rel + "\" bez dat - prosze agenta o daty (bez dat z rozmowy).");
+          return { checkin: undefined, checkout: undefined, oneNightAdded: false, relativeUnresolved: rel };
+        }
+      }
     }
   }
 

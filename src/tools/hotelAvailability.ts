@@ -144,6 +144,7 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
     {
       title: "Availability of one hotel",
       description: "Availability and price of ONE specific hotel for given dates, a month, or the next free date. " +
+        "RELATIVE DATES ('najbliższy weekend', 'za tydzień', 'w piątek', 'na święta'): pass checkin/checkout worked out from today's date if you can; otherwise just pass the user's words in user_request - the server converts 'weekend' (Friday-Sunday) itself and answers status need_dates with today's date for other terms. Never say that Booking.com did not apply a date. " +
         "Use it for: 'czy hotel X ma wolne pokoje 12-13.12', 'ile kosztuje hotel X w terminie…', 'czy hotel X przyjmuje " +
         "gości w grudniu' (month: 12), 'od kiedy hotel X jest otwarty' / 'najbliższy wolny termin' (find_first_available). " +
         "First get hotel_id with booking_find_hotel in this message; in a follow-up about the same hotel omit hotel_id. " +
@@ -178,6 +179,9 @@ export function registerHotelAvailabilityTool(server: McpServer, client: Booking
       const stay = resolveStay(scope, params, "dostepnosc", { ignoreDates: toolPicksDates });
       if (stay.pastError) {
         return { content: [{ type: "text", text: stay.pastError }], isError: true };
+      }
+      if (stay.needDates) {
+        return { content: [{ type: "text", text: JSON.stringify({ status: "need_dates", message: stay.needDates }) }] };
       }
       if (stay.children_without_age > 0) {
         return { content: [{ type: "text", text: childAgesQuestion(stay) }], isError: true };

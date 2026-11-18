@@ -45,3 +45,32 @@ test("zamieniony dzien z miesiacem i data z przeszlosci", () => {
   const past = fixStayDates(addDaysIso(today, -40).replace(/-(\d\d)$/, "-28"), undefined, "hotele 28.");
   assert.ok(past.pastError || past.checkin >= today);
 });
+
+import { weekendFromText, relativeTimeInText, fixStayDates as fix18 } from "../dist/services/dates.js";
+test("weekend = piatek-niedziela od kazdego dnia tygodnia (18.11)", () => {
+  // 2026-11-16 pon ... 2026-11-22 nd
+  const t = "hotele 4* w Warszawie na najbliższy weekend";
+  assert.deepEqual(weekendFromText(t, "2026-11-16"), { checkin: "2026-11-20", checkout: "2026-11-22" });
+  assert.deepEqual(weekendFromText(t, "2026-11-18"), { checkin: "2026-11-20", checkout: "2026-11-22" });
+  assert.deepEqual(weekendFromText(t, "2026-11-19"), { checkin: "2026-11-20", checkout: "2026-11-22" });
+  assert.deepEqual(weekendFromText(t, "2026-11-20"), { checkin: "2026-11-20", checkout: "2026-11-22" });
+  assert.deepEqual(weekendFromText(t, "2026-11-21"), { checkin: "2026-11-21", checkout: "2026-11-22" });
+  assert.deepEqual(weekendFromText(t, "2026-11-22"), { checkin: "2026-11-27", checkout: "2026-11-29" });
+  assert.deepEqual(weekendFromText("w przyszły weekend", "2026-11-21"), { checkin: "2026-11-27", checkout: "2026-11-29" });
+  assert.deepEqual(weekendFromText("w przyszły weekend", "2026-11-18"), { checkin: "2026-11-20", checkout: "2026-11-22" });
+  assert.equal(weekendFromText("na długi weekend", "2026-11-18"), null);
+  assert.equal(weekendFromText("hotele w Gdańsku", "2026-11-18"), null);
+});
+test("okreslenia czasu bez dat (18.11)", () => {
+  for (const t of ["hotel za tydzień", "na święta w Krakowie", "w przyszłym tygodniu", "od piątku do niedzieli", "w środę", "na majówkę"]) {
+    assert.ok(relativeTimeInText(t), t);
+  }
+  for (const t of ["hotel w środku miasta", "świetny hotel w Gdańsku", "hotele w Gdańsku 15-17.12", "hotel na dziś"]) {
+    assert.equal(relativeTimeInText(t), null, t);
+  }
+  const r = fix18(undefined, undefined, "hotele w Krakowie za tydzień");
+  assert.ok(r.relativeUnresolved);
+  assert.equal(r.checkin, undefined);
+  const w = fix18(undefined, undefined, "hotele na weekend 27-29/11");
+  assert.equal(w.weekend, undefined); // jawne daty maja pierwszenstwo przed "weekend"
+});
