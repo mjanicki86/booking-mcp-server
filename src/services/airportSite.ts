@@ -72,7 +72,9 @@ function empty(iata: string | null, reason: AirportSite["reason"]): AirportSite 
 
 // iata - kod IATA lotniska (zalecany), name - nazwa lotniska lub miasto (pomocniczo).
 export async function findAirportSite(iataIn: unknown, nameIn: unknown): Promise<AirportSite> {
-  const name = typeof nameIn === "string" ? nameIn.trim().slice(0, 120) : "";
+  let name = typeof nameIn === "string" ? nameIn.trim().slice(0, 120) : "";
+  // monit AL zwraca "BRAK", gdy nie rozpoznal lotniska - nie szukamy wtedy "BRAK airport"
+  if (/^brak$/i.test(name)) name = "";
   // Temat w AL przekazuje to, co monit wpisal jako lotnisko (np. "Bangkok Suvarnabhumi (BKK)") -
   // kod IATA wyciagamy sami, zeby w Copilot Studio nie trzeba bylo regexow.
   const iata = normalizeIata(iataIn) ?? iataFromText(name);

@@ -57,6 +57,7 @@ test("brak wynikow i zly kod", async () => {
   reply = {};
   assert.equal((await findAirportSite("ZZZ", "")).reason, "not_found");
   assert.equal((await findAirportSite("12", "")).reason, "bad_request");
+  assert.equal((await findAirportSite(undefined, "BRAK")).reason, "bad_request");
 });
 
 test("kod IATA z tekstu monitu", () => {
