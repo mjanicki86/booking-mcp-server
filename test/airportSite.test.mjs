@@ -15,7 +15,7 @@ globalThis.fetch = async (_url, init) => {
   assert.equal(init.headers["X-Goog-FieldMask"].includes("places.internationalPhoneNumber"), false);
   return { ok: true, status: 200, json: async () => reply };
 };
-const { findAirportSite, domainFromUrl, isUnofficialDomain } = await import("../dist/services/airportSite.js");
+const { findAirportSite, domainFromUrl, isUnofficialDomain, iataFromText } = await import("../dist/services/airportSite.js");
 
 test("domena z adresu", () => {
   assert.equal(domainFromUrl("https://www.heathrow.com/"), "heathrow.com");
@@ -57,4 +57,10 @@ test("brak wynikow i zly kod", async () => {
   reply = {};
   assert.equal((await findAirportSite("ZZZ", "")).reason, "not_found");
   assert.equal((await findAirportSite("12", "")).reason, "bad_request");
+});
+
+test("kod IATA z tekstu monitu", () => {
+  assert.equal(iataFromText("Bangkok Suvarnabhumi (BKK)"), "BKK");
+  assert.equal(iataFromText("WAW Lotnisko Chopina"), "WAW");
+  assert.equal(iataFromText("Lotnisko Chopina w Warszawie"), null);
 });

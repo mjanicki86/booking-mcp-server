@@ -81,6 +81,7 @@ app.get("/health", (_req: Request, res: Response) => {
 // ASYSTENT LOTNICZY (19.11): oficjalna domena lotniska z Google Places.
 // Wolane z tematow "Lotniska" i "Saloniki" w Copilot Studio (wezel zadania HTTP).
 // GET /api/airport-site?iata=BKK&name=Suvarnabhumi, naglowek X-Api-Key.
+// &format=text -> sama domena albo "BRAK" (text/plain) - temat w Copilot Studio nie musi parsowac JSON.
 // Klucz: sekret Azure "al-api-key" -> AL_API_KEY. Bez niego endpoint odpowiada 503,
 // reszta serwera dziala normalnie. Klucz Google nigdy nie wychodzi poza serwer.
 // Zawsze HTTP 200 z polem found (poza 401/503), zeby temat w AL nie wpadal w blad.
@@ -102,6 +103,10 @@ app.get("/api/airport-site", async (req: Request, res: Response) => {
   const result = await findAirportSite(req.query.iata, req.query.name);
   console.error("=== [AL] /api/airport-site iata=" + String(req.query.iata ?? "") + " -> " +
     (result.found ? result.domain + " (" + result.source + ")" : result.reason) + ", " + (Date.now() - started) + " ms ===");
+  if (String(req.query.format ?? "").toLowerCase() === "text") {
+    res.type("text/plain").send(result.found && result.domain ? result.domain : "BRAK");
+    return;
+  }
   res.json(result);
 });
 

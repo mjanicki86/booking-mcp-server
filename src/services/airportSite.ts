@@ -58,6 +58,12 @@ export function normalizeIata(iata: unknown): string | null {
   return /^[A-Z]{3}$/.test(v) ? v : null;
 }
 
+// Pierwszy samodzielny kod z trzech wielkich liter, np. "Bangkok Suvarnabhumi (BKK)" -> BKK.
+export function iataFromText(text: string): string | null {
+  const m = /(?:^|[^A-Za-z])([A-Z]{3})(?![A-Za-z])/.exec(text ?? "");
+  return m ? m[1] : null;
+}
+
 const cache = new Map<string, { at: number; value: AirportSite }>();
 
 function empty(iata: string | null, reason: AirportSite["reason"]): AirportSite {
@@ -66,8 +72,10 @@ function empty(iata: string | null, reason: AirportSite["reason"]): AirportSite 
 
 // iata - kod IATA lotniska (zalecany), name - nazwa lotniska lub miasto (pomocniczo).
 export async function findAirportSite(iataIn: unknown, nameIn: unknown): Promise<AirportSite> {
-  const iata = normalizeIata(iataIn);
   const name = typeof nameIn === "string" ? nameIn.trim().slice(0, 120) : "";
+  // Temat w AL przekazuje to, co monit wpisal jako lotnisko (np. "Bangkok Suvarnabhumi (BKK)") -
+  // kod IATA wyciagamy sami, zeby w Copilot Studio nie trzeba bylo regexow.
+  const iata = normalizeIata(iataIn) ?? iataFromText(name);
   if (!iata && !name) return empty(null, "bad_request");
   if (!googlePlacesEnabled()) return empty(iata, "disabled");
 
