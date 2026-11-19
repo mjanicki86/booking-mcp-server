@@ -7,11 +7,14 @@
 //   node dist/probe.js selftest               (autotest wszystkich narzedzi na zywo, jak po wdrozeniu)
 //   node dist/probe.js places-test            (pomiar Google Places + strony hoteli, 22 hotele z listy 02.11)
 //   node dist/probe.js places "Hotel X" "ulica, miasto"
+//   node dist/probe.js airport BKK "Suvarnabhumi"   (Asystent AL: oficjalna domena lotniska)
+//   node dist/probe.js airport-test           (15 lotnisk, porownanie z oczekiwana domena)
 // Klucz API nie jest nigdzie wypisywany.
 import { config } from "./config.js";
 import { parseDatesFromText, fixStayDates } from "./services/dates.js";
 import { findPlace, googlePlacesEnabled } from "./services/googlePlaces.js";
 import { runSelftest } from "./selftest.js";
+import { findAirportSite } from "./services/airportSite.js";
 import { parkingFromWebsite } from "./services/hotelWebsite.js";
 import { parseGuestsFromText, requestedAccommodationTypes, breakfastIntent, wantsParking, parseUserDistanceKm } from "./services/textParsing.js";
 
@@ -140,6 +143,36 @@ async function placesTest(): Promise<void> {
     ", ma telefon " + sum.phone + ", strona pobrana " + sum.fetched + ", parking na stronie " + sum.parking + ".");
 }
 
+// (19.11) Asystent AL - oczekiwane domeny wg wiedzy z 11.2026; "~" = wystarczy, ze domena konczy sie tym tekstem.
+const AIRPORTS: [string, string, string][] = [
+  ["BKK", "Suvarnabhumi", "suvarnabhumi.airportthai.co.th"], ["HKT", "Phuket", "phuket.airportthai.co.th"],
+  ["WAW", "Chopin Warsaw", "lotniskochopina.pl"], ["KRK", "Krakow", "krakowairport.pl"], ["KTW", "Katowice", "katowice-airport.com"],
+  ["FRA", "Frankfurt", "frankfurt-airport.com"], ["LHR", "Heathrow", "heathrow.com"], ["CDG", "Paris Charles de Gaulle", "parisaeroport.fr"],
+  ["MAD", "Madrid Barajas", "aena.es"], ["DXB", "Dubai", "dubaiairports.ae"], ["IST", "Istanbul", "istairport.com"],
+  ["JFK", "John F. Kennedy", "jfkairport.com"], ["ZRH", "Zurich", "flughafen-zuerich.ch"], ["DOH", "Hamad Doha", "dohahamadairport.com"],
+  ["SIN", "Changi", "changiairport.com"],
+];
+
+async function airportOne(iata: string, name: string): Promise<void> {
+  const r = await findAirportSite(iata, name);
+  console.log(JSON.stringify(r, null, 2));
+}
+
+async function airportTest(): Promise<void> {
+  if (!googlePlacesEnabled()) { console.log("Brak GOOGLE_PLACES_API_KEY - test niemozliwy."); return; }
+  let same = 0, found = 0;
+  for (const [iata, name, expected] of AIRPORTS) {
+    const r = await findAirportSite(iata, name);
+    const ok = !!r.domain && (r.domain === expected || r.domain.endsWith("." + expected));
+    if (r.found) found++;
+    if (ok) same++;
+    console.log((ok ? "OK    " : r.found ? "INNA  " : "BRAK  ") + iata + ": " + (r.domain ?? r.reason) + (ok ? "" : "  (oczekiwano " + expected + ")") +
+      (r.url && r.url.replace(/\/$/, "") !== "https://" + (r.domain ?? "") ? "  url " + r.url : ""));
+  }
+  console.log("Podsumowanie: znaleziono " + found + "/" + AIRPORTS.length + ", zgodne z oczekiwana domena " + same + "/" + AIRPORTS.length +
+    ". INNA nie musi byc bledem - sprawdz recznie, czy to strona zarzadcy.");
+}
+
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (cmd === "hotel") await hotel(args);
@@ -147,11 +180,14 @@ async function main(): Promise<void> {
   else if (cmd === "text") text(args);
   else if (cmd === "places-test") await placesTest();
   else if (cmd === "selftest") await runSelftest(parseInt(process.env.PORT ?? "8080", 10), (l) => console.log(l));
+  else if (cmd === "airport-test") await airportTest();
+  else if (cmd === "airport") { if (args[0]) await airportOne(args[0], args[1] ?? ""); }
   else if (cmd === "places") { if (args[0]) await placesOne(args[0], args[1] ?? "", true); }
   else {
     console.log("Komendy:\n  node dist/probe.js hotel <hotel_id> <checkin> <checkout> [dorosli] [wiek,wiek]\n" +
       "  node dist/probe.js facilities <slowo>\n  node dist/probe.js text \"<tresc prosby>\"\n" +
-      "  node dist/probe.js selftest\n  node dist/probe.js places-test\n  node dist/probe.js places \"<nazwa hotelu>\" \"<adres>\"");
+      "  node dist/probe.js selftest\n  node dist/probe.js places-test\n  node dist/probe.js places \"<nazwa hotelu>\" \"<adres>\"\n" +
+      "  node dist/probe.js airport <IATA> [\"<nazwa>\"]\n  node dist/probe.js airport-test");
   }
 }
 

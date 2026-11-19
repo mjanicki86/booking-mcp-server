@@ -7,6 +7,8 @@
 // Na zadanie w konsoli: node dist/probe.js selftest. Wylaczenie: zmienna SELFTEST=off.
 // Klucze zostaja w zmiennych kontenera - nic nie wychodzi poza kontener poza zapytaniami do API.
 import { addDaysIso, warsawToday } from "./services/dates.js";
+import { findAirportSite } from "./services/airportSite.js";
+import { googlePlacesEnabled } from "./services/googlePlaces.js";
 
 type Result = { isError?: boolean; text: string; data: any };
 type Log = (line: string) => void;
@@ -432,6 +434,20 @@ export async function runSelftest(port: number, log: Log = (l) => console.error(
     } catch (err) {
       failed.push(s.name);
       log("=== SELFTEST BLAD " + s.name + ": wyjatek " + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+  // (19.11) Asystent AL: oficjalna domena lotniska (bez MCP, wprost funkcja serwera).
+  if (googlePlacesEnabled()) {
+    total++;
+    const t0 = Date.now();
+    try {
+      const a = await findAirportSite("BKK", "Suvarnabhumi");
+      const why = !a.found ? "brak domeny (" + a.reason + ")" : /airportonline/.test(a.domain ?? "") ? "nieoficjalna " + a.domain : null;
+      if (why) { failed.push("AL lotnisko BKK"); log("=== SELFTEST BLAD AL lotnisko BKK: " + why + " (" + (Date.now() - t0) + " ms)"); }
+      else { ok++; log("=== SELFTEST OK AL lotnisko BKK -> " + a.domain + " (" + (Date.now() - t0) + " ms)"); }
+    } catch (err) {
+      failed.push("AL lotnisko BKK");
+      log("=== SELFTEST BLAD AL lotnisko BKK: wyjatek " + (err instanceof Error ? err.message : String(err)));
     }
   }
   log("=== SELFTEST PODSUMOWANIE: " + ok + "/" + total + " OK" + (failed.length ? " | nie przeszly: " + failed.join("; ") : "") +

@@ -31,7 +31,8 @@ export function googlePlacesEnabled(): boolean {
   return !!config.googlePlacesApiKey;
 }
 
-function countRequest(): number {
+// (19.11) Wspolny licznik dzienny dla hoteli i lotnisk (Asystent AL).
+export function countPlacesRequest(): number {
   const day = new Date().toISOString().slice(0, 10);
   if (day !== requestsDay) { requestsDay = day; requestsToday = 0; }
   return ++requestsToday;
@@ -52,7 +53,7 @@ export async function findPlace(name: string, addressOrCity: string, opts: { lat
     body.locationBias = { circle: { center: { latitude: opts.lat, longitude: opts.lon }, radius: 2000 } };
   }
   const started = Date.now();
-  const n = countRequest();
+  const n = countPlacesRequest();
   let value: PlaceInfo | null = null;
   try {
     const r = await fetch(ENDPOINT, {

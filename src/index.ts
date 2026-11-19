@@ -14,6 +14,7 @@ import { registerHotelAvailabilityTool } from "./tools/hotelAvailability.js";
 import { registerHotelsInfoTool } from "./tools/hotelsInfo.js";
 import { RequestContext, contextFromHeaders } from "./services/requestContext.js";
 import { scheduleSelftest } from "./selftest.js";
+import { findAirportSite } from "./services/airportSite.js";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
@@ -74,6 +75,34 @@ app.use(express.json());
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", server: "booking-mcp-server" });
+});
+
+// ---------------------------------------------------------------------------
+// ASYSTENT LOTNICZY (19.11): oficjalna domena lotniska z Google Places.
+// Wolane z tematow "Lotniska" i "Saloniki" w Copilot Studio (wezel zadania HTTP).
+// GET /api/airport-site?iata=BKK&name=Suvarnabhumi, naglowek X-Api-Key.
+// Klucz: sekret Azure "al-api-key" -> AL_API_KEY. Bez niego endpoint odpowiada 503,
+// reszta serwera dziala normalnie. Klucz Google nigdy nie wychodzi poza serwer.
+// Zawsze HTTP 200 z polem found (poza 401/503), zeby temat w AL nie wpadal w blad.
+// ---------------------------------------------------------------------------
+const AL_API_KEY = process.env.AL_API_KEY ?? "";
+console.error("=== Asystent AL /api/airport-site: " + (AL_API_KEY ? "wlaczony" : "wylaczony (brak AL_API_KEY)") + " ===");
+
+app.get("/api/airport-site", async (req: Request, res: Response) => {
+  if (!AL_API_KEY) { res.status(503).json({ found: false, reason: "disabled" }); return; }
+  const header = req.headers["x-api-key"];
+  const a = Buffer.from(typeof header === "string" ? header : "", "utf8");
+  const b = Buffer.from(AL_API_KEY, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    console.error("=== [AL] /api/airport-site: odrzucone (zly klucz) ===");
+    res.status(401).json({ found: false, reason: "unauthorized" });
+    return;
+  }
+  const started = Date.now();
+  const result = await findAirportSite(req.query.iata, req.query.name);
+  console.error("=== [AL] /api/airport-site iata=" + String(req.query.iata ?? "") + " -> " +
+    (result.found ? result.domain + " (" + result.source + ")" : result.reason) + ", " + (Date.now() - started) + " ms ===");
+  res.json(result);
 });
 
 // ---------------------------------------------------------------------------
