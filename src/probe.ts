@@ -146,7 +146,7 @@ async function placesTest(): Promise<void> {
 // (19.11) Asystent AL - oczekiwane domeny wg wiedzy z 11.2026; "~" = wystarczy, ze domena konczy sie tym tekstem.
 const AIRPORTS: [string, string, string][] = [
   ["BKK", "Suvarnabhumi", "suvarnabhumi.airportthai.co.th"], ["HKT", "Phuket", "phuket.airportthai.co.th"],
-  ["WAW", "Chopin Warsaw", "lotniskochopina.pl"], ["KRK", "Krakow", "krakowairport.pl"], ["KTW", "Katowice", "katowice-airport.com"],
+  ["WAW", "Chopin Warsaw", "lotnisko-chopina.pl"], ["KRK", "Krakow", "krakowairport.pl"], ["KTW", "Katowice", "katowice-airport.com"],
   ["FRA", "Frankfurt", "frankfurt-airport.com"], ["LHR", "Heathrow", "heathrow.com"], ["CDG", "Paris Charles de Gaulle", "parisaeroport.fr"],
   ["MAD", "Madrid Barajas", "aena.es"], ["DXB", "Dubai", "dubaiairports.ae"], ["IST", "Istanbul", "istairport.com"],
   ["JFK", "John F. Kennedy", "jfkairport.com"], ["ZRH", "Zurich", "flughafen-zuerich.ch"], ["DOH", "Hamad Doha", "dohahamadairport.com"],
